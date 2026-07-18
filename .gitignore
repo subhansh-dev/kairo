@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Kairo local config (contains API keys)
+.kairo/
+.openclaw/
+credentials.json
+~/.kairo/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Test output
+coverage/
+
+# Temp
+tmp/
+*.tmp

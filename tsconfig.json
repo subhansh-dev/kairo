@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@anthropic-ai/sdk*": ["./src/stubs/anthropic-sdk.ts"],
+      "bun:bundle": ["./src/stubs/bun-bundle.ts"],
+      "src/entrypoints/agentSdkTypes.js": ["./src/stubs/agentSdkTypes.ts"],
+      "src/entrypoints/agentSdkTypes": ["./src/stubs/agentSdkTypes.ts"]
+    },
+    "baseUrl": "."
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "tests"]
+}

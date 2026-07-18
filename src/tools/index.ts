@@ -1,0 +1,323 @@
+import type { ToolDefinition, ToolResult, ToolRegistry } from './types.js';
+import { checkToolCooldown, recordToolCall } from './types.js';
+import type { MCPClient } from '../mcp/client.js';
+import { bashTool } from './bash.js';
+import { fileReadTool } from './file-read.js';
+import { fileWriteTool } from './file-write.js';
+import { fileEditTool } from './file-edit.js';
+import { grepTool, globTool } from './search.js';
+import { memoryTool } from './memory.js';
+import { webFetchTool, webSearchTool } from './web.js';
+import { clarifyTool } from './clarify.js';
+import { cronTool } from './cron.js';
+import { lsTool } from './ls.js';
+import { gitTool } from './git.js';
+import { todoTool } from './todo.js';
+import { enterPlanModeTool, writePlanTool, exitPlanModeTool } from './plan.js';
+import { sessionSearchTool } from './session-search.js';
+import { notebookEditTool } from './notebook-edit.js';
+import { hashlineTool } from './hashline.js';
+import { taskCreateTool } from './task-create.js';
+import { taskListTool } from './task-list.js';
+import { taskGetTool } from './task-get.js';
+import { taskUpdateTool } from './task-update.js';
+import { taskOutputTool } from './task-output.js';
+import { taskStopTool } from './task-stop.js';
+import { agentTool } from './agent.js';
+import { askUserTool } from './ask-user.js';
+import { sendMessageTool } from './send-message.js';
+import { discoverSkillsTool } from './discover-skills.js';
+import { goalTool } from './goal.js';
+import { ctxInspectTool } from './ctx-inspect.js';
+import { sleepTool } from './sleep.js';
+import { skillTool } from './skill.js';
+import { snipTool } from './snip.js';
+import { reviewArtifactTool } from './review-artifact.js';
+import { suggestPRTool } from './suggest-pr.js';
+import { proactiveTool } from './proactive.js';
+import { advisorTool } from './advisor.js';
+import { mentorTool } from './mentor.js';
+import { extractToolCalls } from './types.js';
+
+const ALL_TOOLS: ToolDefinition[] = [
+  hashlineTool,
+  fileReadTool,
+  fileWriteTool,
+  fileEditTool,
+  bashTool,
+  grepTool,
+  globTool,
+  lsTool,
+  gitTool,
+  webFetchTool,
+  webSearchTool,
+  memoryTool,
+  todoTool,
+  clarifyTool,
+  cronTool,
+  enterPlanModeTool,
+  writePlanTool,
+  exitPlanModeTool,
+  sessionSearchTool,
+  notebookEditTool,
+  taskCreateTool,
+  taskListTool,
+  taskGetTool,
+  taskUpdateTool,
+  taskOutputTool,
+  taskStopTool,
+  agentTool,
+  askUserTool,
+  sendMessageTool,
+  discoverSkillsTool,
+  goalTool,
+  ctxInspectTool,
+  sleepTool,
+  skillTool,
+  snipTool,
+  reviewArtifactTool,
+  suggestPRTool,
+  proactiveTool,
+  advisorTool,
+  mentorTool,
+];
+
+// ─── Tool Map ───────────────────────────────────────────────────
+
+const toolMap = new Map<string, ToolDefinition>();
+for (const tool of ALL_TOOLS) {
+  toolMap.set(tool.name, tool);
+}
+
+// ─── Usage Tracking ────────────────────────────
+
+interface ToolUsage {
+  name: string;
+  callCount: number;
+  successCount: number;
+  failureCount: number;
+  totalMs: number;
+}
+
+const toolUsageMap = new Map<string, ToolUsage>();
+
+// ─── Concurrency Locks ───────────────────────────────────────
+const toolLocks = new Set<string>();
+
+function getToolUsage(name: string): ToolUsage {
+  let usage = toolUsageMap.get(name);
+  if (!usage) {
+    usage = { name, callCount: 0, successCount: 0, failureCount: 0, totalMs: 0 };
+    toolUsageMap.set(name, usage);
+  }
+  return usage;
+}
+
+export function getToolUsageReport(): string {
+  const entries = Array.from(toolUsageMap.values())
+    .sort((a, b) => b.callCount - a.callCount);
+  if (entries.length === 0) return '';
+  return entries.map(u => {
+    const avgMs = u.callCount > 0 ? Math.round(u.totalMs / u.callCount) : 0;
+    const successRate = u.callCount > 0 ? Math.round((u.successCount / u.callCount) * 100) : 0;
+    return `  ${u.name}: ${u.callCount}x (${successRate}% success, avg ${avgMs}ms)`;
+  }).join('\n');
+}
+
+// ─── MCP Tool Integration ───────────────────────────────────────
+
+let mcpClient: MCPClient | null = null;
+
+export function setMCPClient(client: MCPClient | null): void {
+  mcpClient = client;
+}
+
+export function registerMCPTools(client: MCPClient): void {
+  const mcpTools = client.getAllTools();
+  for (const mt of mcpTools) {
+    const name = `mcp_${mt.serverName}_${mt.name}`.replace(/[^a-zA-Z0-9_]/g, '_');
+    if (toolMap.has(name)) continue;
+    const def: ToolDefinition = {
+      name,
+      description: `[MCP ${mt.serverName}] ${mt.description}`,
+      parameters: mt.inputSchema ? {
+        type: 'object' as const,
+        properties: Object.fromEntries(
+          Object.entries((mt.inputSchema as any).properties || {}).map(([k, v]: [string, any]) => [k, { type: v.type || 'string', description: v.description || '' }])
+        ),
+        required: (mt.inputSchema as any).required as string[] | undefined,
+      } : undefined,
+      tier: 'write',
+      concurrencySafe: true,
+      readOnly: false,
+      destructive: false,
+      execute: async (args: string, _signal?: AbortSignal): Promise<ToolResult> => {
+        try {
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = args ? JSON.parse(args) : {};
+          } catch {
+            // Try parsing as key=value pairs
+            parsed = {};
+            if (args) {
+              for (const part of args.split(/\s+/)) {
+                const eq = part.indexOf('=');
+                if (eq > 0) parsed[part.slice(0, eq)] = part.slice(eq + 1);
+              }
+            }
+          }
+          // Validate required fields from input schema
+          const required = (mt.inputSchema as any)?.required as string[] | undefined;
+          if (required && required.length > 0) {
+            const missing = required.filter((r: string) => !(r in parsed) || parsed[r] === undefined || parsed[r] === null);
+            if (missing.length > 0) {
+              return { output: `Missing required fields: ${missing.join(', ')}`, success: false };
+            }
+          }
+          const result = await client.callTool(mt.name, parsed);
+          const output = typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result ?? '');
+          return { output, success: true };
+        } catch (e: any) {
+          return { output: `MCP error: ${e.message}`, success: false };
+        }
+      },
+    };
+    ALL_TOOLS.push(def);
+    toolMap.set(name, def);
+  }
+}
+
+// ─── Registry Implementation ────────────────────────────────────
+
+export const toolRegistry: ToolRegistry = {
+  get(name: string): ToolDefinition | undefined {
+    return toolMap.get(name);
+  },
+
+  getAll(): ToolDefinition[] {
+    return ALL_TOOLS;
+  },
+
+  getNames(): string[] {
+    return ALL_TOOLS.map(t => t.name);
+  },
+
+  getForPrompt(): string {
+    return ALL_TOOLS.map(t => {
+      const safety = t.readOnly ? ' [read-only]' : t.destructive ? ' [destructive]' : '';
+      return `  ${t.name} — ${t.description}${safety}`;
+    }).join('\n');
+  },
+
+  /** Search tools by name or description */
+  search(query: string): ToolDefinition[] {
+    const lower = query.toLowerCase();
+    return ALL_TOOLS.filter(t =>
+      t.name.toLowerCase().includes(lower) ||
+      t.description.toLowerCase().includes(lower) ||
+      (t.prompt && t.prompt.toLowerCase().includes(lower))
+    );
+  },
+
+  /** Get tools by tier */
+  getByTier(tier: 'read' | 'write' | 'exec'): ToolDefinition[] {
+    return ALL_TOOLS.filter(t => t.tier === tier);
+  },
+
+  /** Get read-only tools */
+  getReadOnly(): ToolDefinition[] {
+    return ALL_TOOLS.filter(t => t.readOnly);
+  },
+
+  async execute(name: string, args: string, signal?: AbortSignal): Promise<ToolResult> {
+    const startTime = Date.now();
+    const tool = toolMap.get(name);
+
+    if (!tool) {
+      return {
+        output: `Unknown tool: ${name}. Available: ${ALL_TOOLS.map(t => t.name).join(', ')}`,
+        success: false,
+      };
+    }
+
+    // Check abort signal before execution
+    if (signal?.aborted) {
+      return { output: 'Execution cancelled.', success: false };
+    }
+
+    // Check cooldown
+    const remaining = checkToolCooldown(tool);
+    if (remaining !== null) {
+      return {
+        output: `${tool.name} still on cooldown (${remaining}ms remaining)`,
+        success: false,
+      };
+    }
+
+    // Non-concurrent tools check — simple semaphore
+    if (!tool.concurrencySafe) {
+      const lockKey = `lock:${tool.name}`;
+      if (toolLocks.has(lockKey)) {
+        return {
+          output: `${tool.name} is already running. Wait for it to finish.`,
+          success: false,
+        };
+      }
+      toolLocks.add(lockKey);
+    }
+
+    // Check permissions
+    if (tool.checkPermissions) {
+      const perm = tool.checkPermissions(args);
+      if (!perm.allowed) {
+        return { output: `Permission denied: ${perm.reason}`, success: false };
+      }
+    }
+
+    // Execute
+    try {
+      const result = await tool.execute(args, signal);
+      const duration = Date.now() - startTime;
+
+      // Track usage
+      const usage = getToolUsage(name);
+      usage.callCount++;
+      usage.totalMs += duration;
+      if (result.success) usage.successCount++;
+      else usage.failureCount++;
+
+      // Record call for cooldown
+      recordToolCall(tool);
+
+      // Truncate output if maxOutputLength is set
+      if (tool.maxOutputLength && result.output.length > tool.maxOutputLength) {
+        return {
+          ...result,
+          output: result.output.slice(0, tool.maxOutputLength) + `\n... [truncated at ${tool.maxOutputLength} chars]`,
+        };
+      }
+
+      return result;
+    } catch (e: any) {
+      const duration = Date.now() - startTime;
+      const usage = getToolUsage(name);
+      usage.callCount++;
+      usage.totalMs += duration;
+      usage.failureCount++;
+
+      return {
+        output: `${tool.name} threw: ${e.message}`,
+        success: false,
+        metadata: { error: e.message, duration },
+      };
+    } finally {
+      // Release concurrency lock
+      if (!tool.concurrencySafe) {
+        toolLocks.delete(`lock:${tool.name}`);
+      }
+    }
+  },
+};
+
+export { extractToolCalls };
+export type { ToolDefinition, ToolResult, ToolRegistry };

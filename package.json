@@ -1,0 +1,47 @@
+{
+  "name": "kairo",
+  "version": "0.3.0",
+  "description": "Free MoE coding agent — NVIDIA NIM, Groq, Cerebras with Claude Code-grade features",
+  "main": "dist/index.js",
+  "bin": {
+    "kairo": "./bin/kairo.js"
+  },
+  "scripts": {
+    "setup": "node setup.js",
+    "start": "node bin/kairo.js",
+    "build": "tsc",
+    "dev": "tsx watch src/tui.ts",
+    "test": "vitest",
+    "lint": "eslint src/"
+  },
+  "keywords": [
+    "coding-agent",
+    "moe",
+    "multi-provider",
+    "free-tier",
+    "nvidia-nim",
+    "groq",
+    "cerebras",
+    "ai-agent"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "shell-quote": "^1.8.4",
+    "vscode-jsonrpc": "^9.0.0",
+    "vscode-languageserver-protocol": "^3.18.1",
+    "vscode-languageserver-types": "^3.18.0",
+    "yaml": "^2.4.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/shell-quote": "^1.7.5",
+    "eslint": "^9.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
