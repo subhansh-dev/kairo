@@ -56,8 +56,8 @@ export class BearerAuthProvider implements AuthProvider {
 }
 
 function defaultAuthPath(): string {
-  const grokHome = process.env.GROK_HOME || path.join(os.homedir(), '.grok');
-  return path.join(grokHome, 'auth.json');
+  const kairoHome = process.env.KAIRO_HOME || path.join(os.homedir(), '.kairo');
+  return path.join(kairoHome, 'auth.json');
 }
 
 /**

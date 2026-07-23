@@ -102,7 +102,24 @@ interface ToolUsage {
 const toolUsageMap = new Map<string, ToolUsage>();
 
 // ─── Concurrency Locks ───────────────────────────────────────
-const toolLocks = new Set<string>();
+// Promise-based semaphore for async-safe locking.
+// When a non-concurrent-safe tool is running, subsequent callers
+// queue up and wait for the current execution to finish, rather
+// than being immediately rejected.
+const toolLocks = new Map<string, Promise<void>>();
+
+async function acquireToolLock(lockKey: string): Promise<() => void> {
+  const existing = toolLocks.get(lockKey);
+  let release: () => void;
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  
+  if (existing) {
+    // Wait for the current holder to finish, then acquire
+    await existing;
+  }
+  toolLocks.set(lockKey, promise);
+  return release!;
+}
 
 function getToolUsage(name: string): ToolUsage {
   let usage = toolUsageMap.get(name);
@@ -127,8 +144,15 @@ export function getToolUsageReport(): string {
 // ─── MCP Tool Integration ───────────────────────────────────────
 
 let mcpClient: MCPClient | null = null;
+// MCP tools are stored separately so they can be cleanly removed on disconnect.
+// They are NOT pushed into ALL_TOOLS to prevent unbounded growth on reconnects.
+const MCP_TOOLS: ToolDefinition[] = [];
 
 export function setMCPClient(client: MCPClient | null): void {
+  // If replacing or removing client, unregister old MCP tools first
+  if (mcpClient) {
+    unregisterMCPTools();
+  }
   mcpClient = client;
 }
 
@@ -136,7 +160,7 @@ export function registerMCPTools(client: MCPClient): void {
   const mcpTools = client.getAllTools();
   for (const mt of mcpTools) {
     const name = `mcp_${mt.serverName}_${mt.name}`.replace(/[^a-zA-Z0-9_]/g, '_');
-    if (toolMap.has(name)) continue;
+    if (toolMap.has(name)) continue; // already registered (from a previous connection)
     const def: ToolDefinition = {
       name,
       description: `[MCP ${mt.serverName}] ${mt.description}`,
@@ -182,9 +206,20 @@ export function registerMCPTools(client: MCPClient): void {
         }
       },
     };
-    ALL_TOOLS.push(def);
+    MCP_TOOLS.push(def);
     toolMap.set(name, def);
   }
+}
+
+/**
+ * Unregister all MCP tools (called on disconnect or client replacement).
+ * Removes MCP tools from the toolMap and clears MCP_TOOLS array.
+ */
+export function unregisterMCPTools(): void {
+  for (const tool of MCP_TOOLS) {
+    toolMap.delete(tool.name);
+  }
+  MCP_TOOLS.length = 0;
 }
 
 // ─── Registry Implementation ────────────────────────────────────
@@ -195,15 +230,15 @@ export const toolRegistry: ToolRegistry = {
   },
 
   getAll(): ToolDefinition[] {
-    return ALL_TOOLS;
+    return [...ALL_TOOLS, ...MCP_TOOLS];
   },
 
   getNames(): string[] {
-    return ALL_TOOLS.map(t => t.name);
+    return [...ALL_TOOLS, ...MCP_TOOLS].map(t => t.name);
   },
 
   getForPrompt(): string {
-    return ALL_TOOLS.map(t => {
+    return [...ALL_TOOLS, ...MCP_TOOLS].map(t => {
       const safety = t.readOnly ? ' [read-only]' : t.destructive ? ' [destructive]' : '';
       return `  ${t.name} — ${t.description}${safety}`;
     }).join('\n');
@@ -212,7 +247,7 @@ export const toolRegistry: ToolRegistry = {
   /** Search tools by name or description */
   search(query: string): ToolDefinition[] {
     const lower = query.toLowerCase();
-    return ALL_TOOLS.filter(t =>
+    return [...ALL_TOOLS, ...MCP_TOOLS].filter(t =>
       t.name.toLowerCase().includes(lower) ||
       t.description.toLowerCase().includes(lower) ||
       (t.prompt && t.prompt.toLowerCase().includes(lower))
@@ -221,12 +256,12 @@ export const toolRegistry: ToolRegistry = {
 
   /** Get tools by tier */
   getByTier(tier: 'read' | 'write' | 'exec'): ToolDefinition[] {
-    return ALL_TOOLS.filter(t => t.tier === tier);
+    return [...ALL_TOOLS, ...MCP_TOOLS].filter(t => t.tier === tier);
   },
 
   /** Get read-only tools */
   getReadOnly(): ToolDefinition[] {
-    return ALL_TOOLS.filter(t => t.readOnly);
+    return [...ALL_TOOLS, ...MCP_TOOLS].filter(t => t.readOnly);
   },
 
   async execute(name: string, args: string, signal?: AbortSignal): Promise<ToolResult> {
@@ -254,16 +289,14 @@ export const toolRegistry: ToolRegistry = {
       };
     }
 
-    // Non-concurrent tools check — simple semaphore
+    // Non-concurrent tools check — async-safe semaphore
+    // Instead of immediately rejecting, we queue and wait for the lock.
+    // This prevents the race condition where two concurrent calls both
+    // see the lock as free and both proceed.
+    let releaseLock: (() => void) | undefined;
     if (!tool.concurrencySafe) {
       const lockKey = `lock:${tool.name}`;
-      if (toolLocks.has(lockKey)) {
-        return {
-          output: `${tool.name} is already running. Wait for it to finish.`,
-          success: false,
-        };
-      }
-      toolLocks.add(lockKey);
+      releaseLock = await acquireToolLock(lockKey);
     }
 
     // Check permissions
@@ -312,7 +345,8 @@ export const toolRegistry: ToolRegistry = {
       };
     } finally {
       // Release concurrency lock
-      if (!tool.concurrencySafe) {
+      if (releaseLock) {
+        releaseLock();
         toolLocks.delete(`lock:${tool.name}`);
       }
     }

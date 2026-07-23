@@ -74,6 +74,16 @@ export class PermissionManager extends EventEmitter implements PermissionHandle 
         if (policyDecision.type === 'allow') {
           return { allowed: true, reason: 'policy_allow' };
         }
+        if (policyDecision.type === 'reject') {
+          return { allowed: false, reason: policyDecision.reason || 'policy_reject' }; 
+        }
+        if (policyDecision.type === 'followup') {
+          // Followup requires more context — treat as ask
+          return { allowed: false, reason: 'policy_followup' }; 
+        }
+        if (policyDecision.type === 'cancelled') {
+          return { allowed: false, reason: 'policy_cancelled' }; 
+        }
       }
 
       // Auto mode — use LLM classifier (simplified here)
@@ -124,7 +134,20 @@ export class PermissionManager extends EventEmitter implements PermissionHandle 
   private promptUser(event: PermissionEvent): Promise<Decision> {
     return new Promise((resolve) => {
       const eventId = event.id || `evt-${Date.now()}`;
-      this.pendingRequests.set(eventId, { event, resolve });
+      const timeoutMs = 60000; // 60-second timeout for user response
+      
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(eventId);
+        resolve({ allowed: false, reason: 'timeout_no_response' });
+      }, timeoutMs);
+      
+      this.pendingRequests.set(eventId, {
+        event,
+        resolve: (decision: Decision) => {
+          clearTimeout(timeout);
+          resolve(decision);
+        },
+      });
       this.emit('prompt', { eventId, event });
     });
   }

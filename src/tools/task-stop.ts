@@ -22,7 +22,7 @@ Usage:
       const taskId = args.trim()
       if (!taskId) return { output: 'Error: task ID is required', success: false }
 
-      const task = updateTask(getTaskListId(), taskId, { status: 'completed' })
+      const task = updateTask(getTaskListId(), taskId, { status: 'stopped' })
       if (!task) return { output: `Task not found: ${taskId}`, success: false }
 
       return {

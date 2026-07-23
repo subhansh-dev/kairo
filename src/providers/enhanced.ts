@@ -75,9 +75,6 @@ export class EnhancedProvider implements Provider {
     const body = dialectDef.buildRequestBody(messages, { ...options });
     body.model = model;
 
-    // Debug: log request body
-    // console.error('[DEBUG] Request body:', JSON.stringify(body, null, 2));
-
     const resp = await this.makeRequest(body, options.signal);
 
     const reader = resp.body?.getReader();
@@ -97,13 +94,42 @@ export class EnhancedProvider implements Provider {
 
         buffer += decoder.decode(value, { stream: true });
         chunkCount++;
-        // console.error('[DEBUG] Chunk', chunkCount, ':', buffer.slice(0, 200));
-        
-        const events = dialectDef.parseStreamChunk(buffer);
-        buffer = '';
 
-        for (const event of events) {
-          yield event;
+        // Process complete SSE events, keeping incomplete ones in buffer
+        const lines = buffer.split('\n');
+        let processedUpTo = 0;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (line.startsWith('data: ') || line.startsWith('data:')) {
+            const dataContent = line.startsWith('data: ') ? line.slice(6) : line.slice(5);
+            if (dataContent.trim() === '[DONE]') {
+              processedUpTo = i + 1;
+              continue;
+            }
+            // Try to parse as JSON — if it fails, it's incomplete, keep in buffer
+            try {
+              JSON.parse(dataContent);
+              processedUpTo = i + 1;
+            } catch {
+              // Incomplete JSON — stop processing here
+              break;
+            }
+          } else if (line.trim() === '') {
+            processedUpTo = i + 1;
+          } else {
+            processedUpTo = i + 1;
+          }
+        }
+
+        // Extract complete portion for dialect parsing
+        const completePortion = lines.slice(0, processedUpTo).join('\n');
+        buffer = lines.slice(processedUpTo).join('\n');
+
+        if (completePortion.trim()) {
+          const events = dialectDef.parseStreamChunk(completePortion);
+          for (const event of events) {
+            yield event;
+          }
         }
       }
 
@@ -143,7 +169,11 @@ export class EnhancedProvider implements Provider {
     const key = poolKey || this._lastKey;
     this._lastKey = key;
 
-    const url = `${this.config.baseUrl}/chat/completions`;
+    // Dialect-aware endpoint — each provider may use a different API path
+    let endpoint = '/chat/completions'; // Default for OpenAI-compatible providers
+    if (this._dialect === 'anthropic') endpoint = '/v1/messages';
+    if (this._dialect === 'gemini') endpoint = `/v1beta/models/${(body as any).model}:streamGenerateContent`;
+    const url = `${this.config.baseUrl}${endpoint}`;
     const resp = await fetch(url, {
       method: 'POST',
       headers: {

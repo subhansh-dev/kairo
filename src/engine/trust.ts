@@ -4,6 +4,7 @@
  */
 
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -36,7 +37,7 @@ export class TrustStore {
   static loadFrom(filePath: string): TrustStore {
     // Synchronous load for simplicity
     try {
-      const content = require('fs').readFileSync(filePath, 'utf-8');
+      const content = fsSync.readFileSync(filePath, 'utf-8');
       const doc = TrustStore.parseToml(content);
       return new TrustStore(doc, filePath);
     } catch {
@@ -49,9 +50,9 @@ export class TrustStore {
   }
 
   static defaultPath(): string | null {
-    const grokHome = process.env.GROK_HOME || path.join(os.homedir(), '.grok');
-    if (!grokHome) return null;
-    return path.join(grokHome, TRUST_FILE_NAME);
+    const kairoHome = process.env.KAIRO_HOME || path.join(os.homedir(), '.kairo');
+    if (!kairoHome) return null;
+    return path.join(kairoHome, TRUST_FILE_NAME);
   }
 
   isTrusted(folderPath: string): boolean {
@@ -61,7 +62,7 @@ export class TrustStore {
     let bestTrust = false;
 
     for (const [storedPath, record] of Object.entries(this.doc.folders)) {
-      if (key.startsWith(storedPath) || storedPath.startsWith(key)) {
+      if (key.startsWith(storedPath)) {
         if (storedPath.length > bestMatch.length) {
           bestMatch = storedPath;
           bestTrust = record.trusted;

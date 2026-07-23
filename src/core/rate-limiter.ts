@@ -1,7 +1,13 @@
 /**
- * Kairo — Rate Limit Tracker
- * Per-provider rate limit tracking with bucket-based throttling
+ * Kairo — Rate Limit Tracker (Unified)
+ * Per-provider rate limit tracking with bucket-based throttling,
+ * sliding window enforcement, and jittered backoff calculation.
+ *
+ * This file is the canonical source for rate limit tracking.
+ * The duplicate `rate-limit-tracker.ts` has been merged into this file.
  */
+
+import { jitteredBackoff } from './retry-utils.js';
 
 export interface RateLimitBucket {
   remaining: number;
@@ -16,9 +22,18 @@ export interface RateLimitState {
   requestsPerDay: RateLimitBucket;
 }
 
+interface ExplicitBackoffState {
+  requests: number;
+  tokens: number;
+  resetAt: number;
+  backoffMs: number;
+  lastRequest: number;
+}
+
 export class RateLimitTracker {
   private buckets = new Map<string, RateLimitState>();
   private requestLog = new Map<string, number[]>();
+  private explicitBackoff = new Map<string, ExplicitBackoffState>();
 
   /**
    * Parse rate limit headers from provider response
@@ -54,23 +69,35 @@ export class RateLimitTracker {
   }
 
   /**
-   * Calculate backoff based on rate limit state
+   * Calculate backoff based on rate limit state + explicit backoff + sliding window
    */
   getBackoff(provider: string): number {
     const state = this.buckets.get(provider);
-    if (!state) return 0;
-
+    const explicitState = this.explicitBackoff.get(provider);
     const now = Date.now();
     const backoffs: number[] = [];
 
-    if (state.requestsPerMinute.remaining <= 0) {
-      const wait = state.requestsPerMinute.reset - now;
-      if (wait > 0) backoffs.push(wait);
+    // Check explicit backoff (set via handleRateLimit/setBackoff)
+    if (explicitState && explicitState.backoffMs > 0) {
+      const elapsed = now - explicitState.lastRequest;
+      if (elapsed < explicitState.backoffMs) {
+        backoffs.push(explicitState.backoffMs - elapsed);
+      } else {
+        explicitState.backoffMs = 0;
+      }
     }
 
-    if (state.tokensPerMinute.remaining <= 0) {
-      const wait = state.tokensPerMinute.reset - now;
-      if (wait > 0) backoffs.push(wait);
+    // Check bucket-based rate limits
+    if (state) {
+      if (state.requestsPerMinute.remaining <= 0) {
+        const wait = state.requestsPerMinute.reset - now;
+        if (wait > 0) backoffs.push(wait);
+      }
+
+      if (state.tokensPerMinute.remaining <= 0) {
+        const wait = state.tokensPerMinute.reset - now;
+        if (wait > 0) backoffs.push(wait);
+      }
     }
 
     // Track recent request timestamps for sliding window
@@ -89,10 +116,49 @@ export class RateLimitTracker {
   /**
    * Record a request for sliding window tracking
    */
-  recordRequest(provider: string): void {
+  recordRequest(provider: string, tokens: number = 0): void {
     const log = this.requestLog.get(provider) || [];
     log.push(Date.now());
     this.requestLog.set(provider, log);
+
+    // Update explicit backoff state
+    const explicitState = this.explicitBackoff.get(provider);
+    if (explicitState) {
+      explicitState.requests++;
+      explicitState.tokens += tokens;
+      explicitState.lastRequest = Date.now();
+    }
+  }
+
+  /**
+   * Set a backoff for a provider (e.g., after a 429).
+   */
+  setBackoff(provider: string, ms: number): void {
+    let state = this.explicitBackoff.get(provider);
+    if (!state) {
+      state = { requests: 0, tokens: 0, resetAt: 0, backoffMs: 0, lastRequest: 0 };
+      this.explicitBackoff.set(provider, state);
+    }
+    state.backoffMs = Math.max(state.backoffMs, ms);
+  }
+
+  /**
+   * Handle a rate limit error — computes jittered backoff.
+   */
+  handleRateLimit(provider: string, retryAfterMs?: number): void {
+    const state = this.explicitBackoff.get(provider);
+    const attemptCount = state ? state.requests : 0;
+    const backoff = retryAfterMs || jitteredBackoff(attemptCount + 1);
+    this.setBackoff(provider, backoff);
+  }
+
+  /**
+   * Reset a provider's state (e.g., after successful request).
+   */
+  resetProvider(provider: string): void {
+    this.buckets.delete(provider);
+    this.requestLog.delete(provider);
+    this.explicitBackoff.delete(provider);
   }
 
   /**
@@ -126,6 +192,22 @@ export class RateLimitTracker {
   reset(): void {
     this.buckets.clear();
     this.requestLog.clear();
+    this.explicitBackoff.clear();
+  }
+
+  /**
+   * Get status for all providers (explicit backoff info).
+   */
+  getStatus(): Record<string, { requests: number; tokens: number; backoffMs: number }> {
+    const result: Record<string, any> = {};
+    for (const [name, state] of this.explicitBackoff) {
+      result[name] = {
+        requests: state.requests,
+        tokens: state.tokens,
+        backoffMs: state.backoffMs,
+      };
+    }
+    return result;
   }
 
   private getOrCreate(provider: string): RateLimitState {

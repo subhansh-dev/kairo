@@ -286,6 +286,12 @@ export interface RunAgentOptions {
   context?: string;
   signal?: AbortSignal;
   onEvent?: (event: AgentEvent) => void;
+  /** Override system prompt (for delegated tasks) */
+  systemPrompt?: string;
+  /** Restrict tools to only these names */
+  allowedTools?: string[];
+  /** Block these tool names from use */
+  blockedTools?: string[];
 }
 
 export type AgentEvent =
@@ -316,9 +322,10 @@ export async function runAgent(
 
   onEvent?.({ type: 'start', agent: agentName });
 
-  // Build messages
+  // Build messages — allow systemPrompt override from delegation
+  const systemPrompt = options.systemPrompt || agent.systemPrompt;
   const messages: ChatMessage[] = [
-    { role: 'system', content: agent.systemPrompt },
+    { role: 'system', content: systemPrompt },
   ];
 
   if (options.context) {
@@ -390,6 +397,9 @@ export async function runAgent(
       const readCalls: typeof calls = [];
       const writeCalls: typeof calls = [];
       for (const call of calls) {
+        // Apply tool restrictions from delegation
+        if (options.allowedTools && !options.allowedTools.includes(call.name)) continue;
+        if (options.blockedTools && options.blockedTools.includes(call.name)) continue;
         const tool = toolRegistry.get(call.name);
         if (tool?.concurrencySafe && tool?.readOnly) {
           readCalls.push(call);

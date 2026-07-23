@@ -81,10 +81,23 @@ export async function delegateTask(config: DelegationConfig): Promise<Delegation
   const systemPrompt = buildDelegationPrompt(config.task, config.context, toolContext);
 
   try {
-    const result = await runAgent(config.agent, config.task, {
+    const agentPromise = runAgent(config.agent, config.task, {
       context: config.context,
       model: undefined, // use default routing
+      systemPrompt,
+      allowedTools: allowedTools ? [...allowedTools] : undefined,
+      blockedTools: [...blockedTools],
     });
+
+    // Enforce timeout if configured
+    const result = config.timeoutMs
+      ? await Promise.race([
+          agentPromise,
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Delegation timed out after ${config.timeoutMs}ms`)), config.timeoutMs)
+          ),
+        ])
+      : await agentPromise;
 
     return {
       agent: config.agent,

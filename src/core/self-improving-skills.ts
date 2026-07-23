@@ -8,7 +8,7 @@
  * Over time, skills accumulate experience that makes them more effective.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -47,10 +47,9 @@ function ensureDir(): void {
 function getExperiences(): Map<string, SkillExperience> {
   if (experiences) return experiences;
   experiences = new Map();
-  ensureDir();
+  ensureDir(); // Creates MUTATIONS_DIR if it doesn't exist
 
-  // Load from disk
-  const { readdirSync } = require('fs');
+  // Load from disk using ESM import (not require)
   try {
     for (const entry of readdirSync(MUTATIONS_DIR)) {
       if (!entry.endsWith('.json')) continue;

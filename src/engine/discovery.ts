@@ -119,7 +119,7 @@ export async function discoverAgentsMd(rootCwd: string): Promise<AgentConfigFile
     { path: 'AGENTS.md', source: 'agents_md' as const },
     { path: 'CLAUDE.md', source: 'claude_md' as const },
     { path: '.claude/rules', source: 'rules' as const },
-    { path: '.grok/rules', source: 'rules' as const },
+    { path: '.kairo/rules', source: 'rules' as const },
   ];
 
   let current = rootCwd;
@@ -158,8 +158,8 @@ export async function discoverPlugins(
 ): Promise<DiscoveredPlugin[]> {
   const plugins: DiscoveredPlugin[] = [];
   const dirs = config?.dirs || [
-    path.join(rootCwd, '.grok', 'plugins'),
-    path.join(os.homedir(), '.grok', 'plugins'),
+    path.join(rootCwd, '.kairo', 'plugins'),
+    path.join(os.homedir(), '.kairo', 'plugins'),
   ];
 
   for (const dir of dirs) {
@@ -185,12 +185,12 @@ export async function discoverPlugins(
 }
 
 /**
- * Load project config from .grok/config.toml files.
+ * Load project config from .kairo/config.toml files.
  */
 export async function loadProjectConfig(rootCwd: string): Promise<ProjectConfig> {
   const config: ProjectConfig = {};
   const configFiles = [
-    path.join(rootCwd, '.grok', 'config.toml'),
+    path.join(rootCwd, '.kairo', 'config.toml'),
     path.join(rootCwd, '.mcp.json'),
   ];
 
@@ -214,8 +214,8 @@ export async function loadPermissions(rootCwd: string): Promise<ResolvedPermissi
   const permissions: ResolvedPermissions = { rules: [], mode: 'ask' };
 
   const permFiles = [
-    path.join(rootCwd, '.grok', 'permissions.toml'),
-    path.join(rootCwd, '.grok', 'permissions.json'),
+    path.join(rootCwd, '.kairo', 'permissions.toml'),
+    path.join(rootCwd, '.kairo', 'permissions.json'),
   ];
 
   for (const permFile of permFiles) {

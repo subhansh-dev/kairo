@@ -7,11 +7,29 @@ import type { ChatMessage } from '../providers/registry.js';
 // ─── Token Estimation ───────────────────────────────────────────
 
 /**
- * Fast token estimation: 1 token ≈ 4 characters
+ * Improved token estimation: 3.5 chars/token for code, 2 chars/token for CJK,
+ * 4 chars/token for plain English (original heuristic as fallback).
  */
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  return Math.ceil(Buffer.byteLength(text, 'utf-8') / 4);
+  
+  // Count CJK characters (they use ~2 chars per token)
+  const cjkPattern = /[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef]/g;
+  const cjkCount = (text.match(cjkPattern) || []).length;
+  const nonCjkLength = text.length - cjkCount;
+  
+  // Code-like content (many symbols, brackets, operators) uses ~3.5 chars/token
+  const codePattern = /[{}\[\]()<>=;:&|+\-*\/\\@#$%~^]/g;
+  const codeCharCount = (text.match(codePattern) || []).length;
+  const codeRatio = codeCharCount / Math.max(nonCjkLength, 1);
+  
+  // Blend estimation based on content type
+  const cjkTokens = Math.ceil(cjkCount / 1.5); // CJK: ~1.5 chars/token
+  let nonCjkCharsPerToken = 4.0; // Default: English
+  if (codeRatio > 0.08) nonCjkCharsPerToken = 3.2; // Code-heavy: fewer chars per token
+  
+  const nonCjkTokens = Math.ceil(nonCjkLength / nonCjkCharsPerToken);
+  return cjkTokens + nonCjkTokens;
 }
 
 export function estimateMessageTokens(message: ChatMessage): number {
@@ -274,7 +292,7 @@ export function microCompact(messages: ChatMessage[]): ChatMessage[] {
         trimmed = lines.slice(0, 40).join('\n') +
           `\n\n[... ${lines.length - 60} lines trimmed ...]\n\n` +
           lines.slice(-20).join('\n');
-      } else if (trimmed.length > 5000) {
+      } else {
         // Long single-line content: keep first 2000 + last 1000
         trimmed = trimmed.slice(0, 2000) + `\n[... ${trimmed.length - 3000} chars trimmed ...]\n` + trimmed.slice(-1000);
       }

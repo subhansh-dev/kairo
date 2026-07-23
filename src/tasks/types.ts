@@ -3,7 +3,7 @@
  * Adapted to kairo's simpler architecture
  */
 
-export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted'
+export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'stopped' | 'deleted'
 
 export interface Task {
   id: string

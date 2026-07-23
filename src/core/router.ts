@@ -56,6 +56,18 @@ export const MODELS = {
   classifier: { provider: 'groq',      model: 'gpt-oss-20b',                thinking: false },
 };
 
+/**
+ * Coordinator-compatible model definitions.
+ * Maps the coordinator's role names (thinker, worker, workerFast, verifier)
+ * to the corresponding provider/model configurations.
+ */
+export const ROUTER_MODELS = {
+  thinker:    { provider: 'nvidia',  model: 'nvidia/nemotron-3-ultra-550b-a55b', thinking: true },
+  worker:     { provider: 'nvidia',  model: 'nvidia/nemotron-3-ultra-550b-a55b', thinking: false },
+  workerFast: { provider: 'groq',    model: 'gpt-oss-20b',                thinking: false },
+  verifier:   { provider: 'groq',    model: 'gpt-oss-120b',               thinking: false },
+} as const;
+
 // ─── LLM-Based Classification ──────────────────────────────
 
 const CLASSIFIER_PROMPT = `You are a task classifier. Given a user message, classify it into exactly one category and complexity level.

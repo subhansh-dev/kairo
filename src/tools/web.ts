@@ -53,15 +53,43 @@ HTTP is upgraded to HTTPS. Cross-host redirects are returned.`,
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
         signal: AbortSignal.timeout(15000),
-        redirect: 'follow',
+        redirect: 'manual', // Check each redirect manually for SSRF safety
       });
 
-      if (!resp.ok) {
-        return { output: `Error: HTTP ${resp.status} ${resp.statusText}`, success: false };
+      // Handle redirects with SSRF checks on each hop
+      let finalResp = resp;
+      let redirectCount = 0;
+      while (finalResp.status >= 300 && finalResp.status < 400 && redirectCount < 5) {
+        const location = finalResp.headers.get('location');
+        if (!location) break;
+        const redirectUrl = new URL(location, parsedUrl.toString());
+        try {
+          await checkSsrf(redirectUrl.toString());
+        } catch (e) {
+          return { output: `Error: Redirect to internal IP blocked: ${(e as Error).message}`, success: false }; 
+        }
+        finalResp = await fetch(redirectUrl.toString(), {
+          headers: {
+            'User-Agent': 'Kairo/0.3.0 (coding-agent)',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+          signal: AbortSignal.timeout(15000),
+          redirect: 'manual',
+        });
+        parsedUrl = redirectUrl;
+        redirectCount++;
       }
 
-      const contentType = resp.headers.get('content-type') || '';
-      const text = await resp.text();
+      if (finalResp.status >= 300 && finalResp.status < 400) {
+        return { output: 'Error: Too many redirects', success: false }; 
+      }
+
+      if (!finalResp.ok) {
+        return { output: `Error: HTTP ${finalResp.status} ${finalResp.statusText}`, success: false }; 
+      }
+
+      const contentType = finalResp.headers.get('content-type') || '';
+      const text = await finalResp.text();
 
       // Basic HTML to markdown conversion
       let markdown = text;

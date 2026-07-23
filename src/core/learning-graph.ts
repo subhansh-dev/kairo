@@ -128,6 +128,9 @@ export function recordSkillUse(skillName: string, category: string = 'general'):
   node.useCount++;
   node.lastUsed = Date.now();
   node.state = 'active';
+  
+  // Auto-save graph to disk after every use
+  saveGraph();
 }
 
 export function recordSkillCreation(skillName: string, fromTask: string, related: string[] = []): void {

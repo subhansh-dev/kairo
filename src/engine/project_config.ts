@@ -1,10 +1,11 @@
 /**
- * Project config-file discovery — locating repo-local .mcp.json and .grok/config.toml.
+ * Project config-file discovery — locating repo-local .mcp.json and .kairo/config.toml.
  *
  */
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
 
 export const MCP_JSON_FILENAME = '.mcp.json';
 
@@ -78,7 +79,7 @@ export async function findMcpJsonFiles(cwd: string): Promise<string[]> {
 }
 
 /**
- * Find all .grok/config.toml files from cwd upward to git repo root.
+ * Find all .kairo/config.toml files from cwd upward to git repo root.
  * Returns paths ordered from repo root (lowest priority) to cwd (highest).
  */
 export async function findProjectConfigs(cwd: string): Promise<string[]> {
@@ -90,13 +91,13 @@ export async function findProjectConfigs(cwd: string): Promise<string[]> {
  * findProjectConfigs over a precomputed dir chain (repo-root-first).
  */
 export async function findProjectConfigsIn(chainDirs: string[]): Promise<string[]> {
-  const userHome = process.env.GROK_HOME || path.join(require('os').homedir(), '.grok');
+  const userHome = process.env.KAIRO_HOME || path.join(os.homedir(), '.kairo');
   const userConfig = path.join(userHome, 'config.toml');
 
   // Reverse so repo root comes first (lowest priority)
   const configs: string[] = [];
   for (const dir of [...chainDirs].reverse()) {
-    const configPath = path.join(dir, '.grok', 'config.toml');
+    const configPath = path.join(dir, '.kairo', 'config.toml');
     try {
       const stat = await fs.stat(configPath);
       if (stat.isFile() && path.resolve(configPath) !== path.resolve(userConfig)) {

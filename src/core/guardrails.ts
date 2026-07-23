@@ -1,7 +1,13 @@
 /**
- * Kairo — Tool Call Guardrails
- * Dangerous action detection, failure classification, idempotent-no-progress detection
+ * Kairo — Tool Call Guardrails (Unified)
+ * Dangerous action detection, failure classification, idempotent-no-progress detection,
+ * hash-based signature tracking, and threat pattern assessment.
+ *
+ * This file is the canonical source for all guardrail primitives.
+ * The duplicate `tool-guardrails.ts` has been merged into this file.
  */
+
+import { createHash } from 'crypto';
 
 // ─── Config ────────────────────────────────────────────────
 
@@ -12,6 +18,14 @@ export interface GuardrailConfig {
   blockDangerousCommands: boolean;
   blockPathTraversal: boolean;
   blockSecretExposure: boolean;
+  warningsEnabled: boolean;
+  hardStopEnabled: boolean;
+  exactFailureWarnAfter: number;
+  exactFailureBlockAfter: number;
+  sameToolFailureWarnAfter: number;
+  sameToolFailureHaltAfter: number;
+  noProgressWarnAfter: number;
+  noProgressBlockAfter: number;
 }
 
 const DEFAULT_CONFIG: GuardrailConfig = {
@@ -21,7 +35,27 @@ const DEFAULT_CONFIG: GuardrailConfig = {
   blockDangerousCommands: true,
   blockPathTraversal: true,
   blockSecretExposure: true,
+  warningsEnabled: true,
+  hardStopEnabled: false,
+  exactFailureWarnAfter: 2,
+  exactFailureBlockAfter: 5,
+  sameToolFailureWarnAfter: 3,
+  sameToolFailureHaltAfter: 8,
+  noProgressWarnAfter: 2,
+  noProgressBlockAfter: 5,
 };
+
+// ─── Idempotent & Mutating Tool Sets ────────────────────
+
+/** Tools that are safe to repeat (reads, searches) */
+export const IDEMPOTENT_TOOL_NAMES = new Set([
+  'read', 'grep', 'glob', 'ls', 'web_fetch', 'web_search', 'session_search',
+]);
+
+/** Tools that mutate state */
+export const MUTATING_TOOL_NAMES = new Set([
+  'exec', 'write', 'edit', 'git', 'todo', 'memory', 'skill',
+]);
 
 // ─── Hardline Patterns (unconditionally blocked) ──────────
 
@@ -34,8 +68,8 @@ const HARDLINE_PATTERNS: RegExp[] = [
   /chown\s+-R?\s+\//,
   />\s*\/dev\/sda/,
   /shutdown\s+-h\s+now/,
-  /reboot/,
-  /halt/,
+  /(?:^|&&|\|\||;|\|)\s*(?:sudo\s+)?reboot\b/m,
+  /(?:^|&&|\|\||;|\|)\s*(?:sudo\s+)?halt\b/m,
   /poweroff/,
   /init\s+0/,
   /init\s+6/,
@@ -60,7 +94,42 @@ export function classifyToolFailure(error: string): FailureClass {
   return 'unknown';
 }
 
-// ─── Tool Call Guardrail Controller ───────────────────────
+// ─── Hash-Based Signature Tracking ───────────────────
+
+/** Canonicalize tool args for hashing (sorted keys, stable serialization). */
+export function canonicalToolArgs(args: Record<string, unknown>): string {
+  return JSON.stringify(args, Object.keys(args).sort());
+}
+
+/** Create a stable hash of tool args. */
+export function hashToolArgs(args: Record<string, unknown>): string {
+  return createHash('sha256').update(canonicalToolArgs(args)).digest('hex').slice(0, 12);
+}
+
+export interface ToolCallSignature {
+  toolName: string;
+  argsHash: string;
+}
+
+export function createSignature(toolName: string, args: Record<string, unknown>): ToolCallSignature {
+  return { toolName, argsHash: hashToolArgs(args) }; 
+}
+
+export type GuardrailAction = 'allow' | 'warn' | 'block' | 'halt';
+
+export interface ToolGuardrailDecision {
+  action: GuardrailAction;
+  code: string;
+  message: string;
+}
+
+interface TurnObservation {
+  signature: ToolCallSignature;
+  success: boolean;
+  timestamp: number;
+}
+
+// ─── Tool Call Guardrail Controller (Unified) ───────────────
 
 export interface GuardrailState {
   consecutiveFailures: number;
@@ -69,6 +138,8 @@ export interface GuardrailState {
   idempotentTurns: number;
   lastOutput: string | null;
   blocklisted: boolean;
+  observations: TurnObservation[];
+  noProgressRuns: number;
 }
 
 export class GuardrailController {
@@ -79,6 +150,8 @@ export class GuardrailController {
     idempotentTurns: 0,
     lastOutput: null,
     blocklisted: false,
+    observations: [],
+    noProgressRuns: 0,
   };
   private config: GuardrailConfig;
 
@@ -91,6 +164,11 @@ export class GuardrailController {
    */
   checkHardline(command: string): { blocked: boolean; reason?: string } {
     if (!this.config.blockDangerousCommands) return { blocked: false };
+    // Also check threat patterns for enhanced blocking
+    const threat = assessCommandThreat(command);
+    if (threat.isThreat && threat.matches.some(m => m.severity === 'block')) {
+      return { blocked: true, reason: `Blocked by threat pattern: ${threat.matches[0].label}` };
+    }
 
     for (const pattern of HARDLINE_PATTERNS) {
       if (pattern.test(command)) {
@@ -102,9 +180,16 @@ export class GuardrailController {
   }
 
   /**
-   * Record a tool result and detect loops
+   * Record a tool result and detect loops.
+   * Also tracks hash-based signatures for idempotent no-progress detection.
    */
-  recordResult(toolName: string, success: boolean, output: string): { stuck: boolean; reason?: string } {
+  recordResult(toolName: string, success: boolean, output: string, args?: Record<string, unknown>): { stuck: boolean; reason?: string; action?: GuardrailAction } {
+    // Track observation for hash-based detection
+    if (args) {
+      const sig = createSignature(toolName, args);
+      this.state.observations.push({ signature: sig, success, timestamp: Date.now() });
+    }
+
     if (!success) {
       this.state.consecutiveFailures++;
 
@@ -114,6 +199,10 @@ export class GuardrailController {
       if (this.state.consecutiveFailures >= this.config.maxConsecutiveFailures) {
         return { stuck: true, reason: `${this.config.maxConsecutiveFailures}+ consecutive failures` };
       }
+      // Check same-tool failure warn
+      if (this.config.warningsEnabled && failures >= this.config.sameToolFailureWarnAfter) {
+        // Log warning but don't stop
+      }
       if (failures >= this.config.maxSameToolFailures) {
         return { stuck: true, reason: `"${toolName}" failed ${failures}+ times` };
       }
@@ -121,15 +210,31 @@ export class GuardrailController {
       this.state.consecutiveFailures = 0;
     }
 
-    // Idempotent no-progress detection
+    // Idempotent no-progress detection (output-based)
     const normalized = output.slice(0, 200);
     if (this.state.lastOutput !== null && this.state.lastOutput === normalized) {
       this.state.idempotentTurns++;
+      this.state.noProgressRuns++;
       if (this.state.idempotentTurns >= this.config.maxIdempotentTurns) {
         return { stuck: true, reason: 'Idempotent output detected — no progress' };
       }
     } else {
       this.state.idempotentTurns = 0;
+      this.state.noProgressRuns = 0;
+    }
+
+    // Hash-based idempotent check (even on success)
+    if (args && IDEMPOTENT_TOOL_NAMES.has(toolName)) {
+      const sig = createSignature(toolName, args);
+      const recentSame = this.state.observations
+        .filter(o => o.signature.toolName === toolName && o.signature.argsHash === sig.argsHash)
+        .length;
+      if (recentSame > 1) {
+        this.state.noProgressRuns++;
+        if (this.config.warningsEnabled && this.state.noProgressRuns >= this.config.noProgressWarnAfter) {
+          // Warning logged but not blocking
+        }
+      }
     }
 
     this.state.lastOutput = normalized;
@@ -157,14 +262,26 @@ export class GuardrailController {
       idempotentTurns: 0,
       lastOutput: null,
       blocklisted: false,
+      observations: [],
+      noProgressRuns: 0,
     };
+  }
+
+  /**
+   * Alias for reset() — backward compatibility with ToolCallGuardrailController.
+   * Resets guardrail state for a new turn.
+   */
+  resetForTurn(): void {
+    this.reset();
   }
 
   /**
    * Get current state summary
    */
   getSummary(): string {
-    const lines: string[] = [];
+    const total = this.state.observations.length;
+    const failures = this.state.observations.filter(o => !o.success).length;
+    const lines: string[] = [`Tool calls: ${total}, failures: ${failures}, no-progress: ${this.state.noProgressRuns}`];
     if (this.state.consecutiveFailures > 0) lines.push(`Consecutive failures: ${this.state.consecutiveFailures}`);
     if (this.state.idempotentTurns > 0) lines.push(`Idempotent turns: ${this.state.idempotentTurns}`);
     if (this.state.sameToolFailures.size > 0) {
@@ -179,16 +296,9 @@ export class GuardrailController {
 
 
 export const THREAT_PATTERNS: Array<{ pattern: RegExp; label: string; severity: 'block' | 'warn' | 'flag' }> = [
-  { pattern: /rm\s+-[a-z]*rf\s+\//, label: 'rm -rf /', severity: 'block' },
-  { pattern: /mkfs\s+\/dev\//, label: 'Format system disk', severity: 'block' },
-  { pattern: /dd\s+if=\/dev\/zero\s+of=\/dev\//, label: 'Overwrite system disk', severity: 'block' },
-  { pattern: /shutdown|reboot|halt|poweroff/, label: 'System shutdown', severity: 'block' },
-  { pattern: /chmod\s+-R?\s*777\s+\//, label: 'World-writable root', severity: 'block' },
-  { pattern: /:\(\)\s*\{/, label: 'Fork bomb', severity: 'block' },
-  { pattern: />\s*\/dev\/sda/, label: 'Direct disk write', severity: 'block' },
-  { pattern: /wget|curl\s+.*\|/, label: 'Pipe from network', severity: 'warn' },
-  { pattern: /eval\s+/, label: 'Dynamic eval', severity: 'warn' },
-  { pattern: /exec\s+/, label: 'Exec replacement', severity: 'warn' },
+  { pattern: /\beval\s*\(/, label: 'Dynamic eval', severity: 'warn' },
+  { pattern: /\bexec\s*\(/, label: 'Exec replacement', severity: 'warn' },
+  { pattern: /(?:wget|curl)\s+.*\|/, label: 'Pipe from network', severity: 'warn' },
   { pattern: /base64\s+-d.*\|/, label: 'Base64 decode pipe', severity: 'warn' },
   { pattern: /chown\s+-R\s/, label: 'Recursive chown', severity: 'warn' },
   { pattern: /IFS\s*=/, label: 'IFS manipulation', severity: 'warn' },

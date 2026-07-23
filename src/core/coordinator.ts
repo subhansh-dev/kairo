@@ -5,16 +5,12 @@
  */
 
 import type { ComplexityLevel, TaskType } from './router.js';
+import { ROUTER_MODELS } from './router.js';
 import { getBestModel } from './learner.js';
 
 // ─── Model Definitions ─────────────────────────────────────
 
-const MODELS = {
-  thinker:   { provider: 'nvidia',  model: 'nvidia/nemotron-3-ultra-550b-a55b', thinking: true },
-  worker:    { provider: 'nvidia',  model: 'nvidia/nemotron-3-ultra-550b-a55b', thinking: false },
-  workerFast:{ provider: 'groq',    model: 'gpt-oss-20b',                thinking: false },
-  verifier:  { provider: 'groq',    model: 'gpt-oss-120b',               thinking: false },
-} as const;
+const MODELS = ROUTER_MODELS;
 
 // ─── Types ─────────────────────────────────────────────────
 
@@ -167,8 +163,9 @@ export function parseVerdict(text: string): VerificationResult {
     return { approved: false, feedback: text.slice(0, 500) };
   }
 
-  // Default: approve if unclear (avoid infinite loops)
-  return { approved: true, feedback: 'Approved (no explicit rejection found)' };
+  // Default: reject if unclear — safer for verification (avoid approving bad work)
+  // But cap iterations to avoid infinite loops
+  return { approved: false, feedback: 'Verdict unclear — requires human review or re-verification' };
 }
 
 // ─── Role Prompt Builder ───────────────────────────────────

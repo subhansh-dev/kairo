@@ -3,6 +3,7 @@
  *
  */
 
+import * as fs from 'fs/promises';
 import { TrustStore, workspaceKey, isUnsafeTrustRoot } from './trust';
 
 export enum TrustOutcome {
@@ -63,10 +64,9 @@ export function grantFolderTrust(
  * Check if repo-local code-exec configs are present in the folder.
  */
 export async function hasRepoConfigs(cwd: string): Promise<boolean> {
-  const fs = require('fs/promises');
   const configPaths = [
     '.mcp.json',
-    '.grok/config.toml',
+    '.kairo/config.toml',
   ];
 
   for (const configPath of configPaths) {

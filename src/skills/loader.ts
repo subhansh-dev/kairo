@@ -4,7 +4,7 @@
  */
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
-import { join, basename } from 'path';
+import { join, basename, dirname } from 'path';
 import { homedir } from 'os';
 
 export interface SkillFrontmatter {
@@ -21,7 +21,7 @@ export interface Skill {
   path: string;
   content: string;
   frontmatter?: SkillFrontmatter;
-  source: 'user' | 'project' | 'claude';
+  source: 'user' | 'project' | 'claude' | 'system';
 }
 
 function parseFrontmatter(content: string): { meta: SkillFrontmatter; body: string } {
@@ -29,24 +29,79 @@ function parseFrontmatter(content: string): { meta: SkillFrontmatter; body: stri
   if (!match) return { meta: {}, body: content };
 
   const meta: SkillFrontmatter = {};
-  for (const line of match[1].split('\n')) {
+  const yamlContent = match[1];
+  let currentKey: string | null = null;
+  let currentValue: string = '';
+  let inArray = false;
+  let arrayItems: string[] = [];
+
+  for (const line of yamlContent.split('\n')) {
     const colon = line.indexOf(':');
-    if (colon > 0) {
+    // Check if this is a new key-value line (not indented)
+    if (colon > 0 && !line.startsWith(' ') && !line.startsWith('\t')) {
+      // Flush previous key
+      if (currentKey) {
+        flushKeyValue(meta, currentKey, currentValue, inArray ? arrayItems : undefined);
+      }
       const key = line.slice(0, colon).trim();
       const val = line.slice(colon + 1).trim();
-      if (key === 'globs') meta.globs = val.split(',').map(s => s.trim());
-      else if (key === 'always-apply' || key === 'alwaysApply') meta.alwaysApply = val === 'true';
-      else if (key === 'hide') meta.hide = val === 'true';
-      else if (key === 'disable-model-invocation' || key === 'disableModelInvocation') meta.disableModelInvocation = val === 'true';
-      else if (key === 'name') meta.name = val;
-      else if (key === 'description') meta.description = val;
+      // Check for array start
+      if (val === '' && line[colon + 1] === undefined || val.startsWith('[')) {
+        // Inline array like [item1, item2]
+        if (val.startsWith('[')) {
+          const items = val.slice(1, -1).split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
+          currentKey = key;
+          currentValue = val;
+          inArray = false;
+          arrayItems = items;
+          continue;
+        }
+        inArray = true;
+        arrayItems = [];
+        currentKey = key;
+        currentValue = val;
+        continue;
+      }
+      currentKey = key;
+      currentValue = val;
+      inArray = false;
+      arrayItems = [];
+    } else if (inArray && (line.startsWith('  - ') || line.startsWith('    - '))) {
+      // YAML array item (indented dash)
+      const item = line.replace(/^\s*- /, '').trim().replace(/^['"]|['"]$/g, '');
+      arrayItems.push(item);
+    } else if (currentKey) {
+      // Multi-line value continuation (indented)
+      currentValue += '\n' + line;
     }
+  }
+  // Flush last key
+  if (currentKey) {
+    flushKeyValue(meta, currentKey, currentValue, inArray ? arrayItems : undefined);
   }
 
   return { meta, body: match[2] };
 }
 
-function loadSkillDir(dirPath: string, source: 'user' | 'project' | 'claude'): Skill[] {
+function flushKeyValue(meta: SkillFrontmatter, key: string, val: string, arrayItems?: string[]): void {
+  // Normalize key names (support both camelCase and kebab-case)
+  const normalizedKey = key.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  if (normalizedKey === 'globs') {
+    meta.globs = arrayItems || val.split(',').map(s => s.trim());
+  } else if (normalizedKey === 'alwaysApply') {
+    meta.alwaysApply = val === 'true' || val === 'yes';
+  } else if (normalizedKey === 'hide') {
+    meta.hide = val === 'true' || val === 'yes';
+  } else if (normalizedKey === 'disableModelInvocation') {
+    meta.disableModelInvocation = val === 'true' || val === 'yes';
+  } else if (normalizedKey === 'name') {
+    meta.name = val;
+  } else if (normalizedKey === 'description') {
+    meta.description = val;
+  }
+}
+
+function loadSkillDir(dirPath: string, source: 'user' | 'project' | 'claude' | 'system'): Skill[] {
   const skills: Skill[] = [];
   if (!existsSync(dirPath)) return skills;
 
@@ -80,7 +135,10 @@ function loadSkillDir(dirPath: string, source: 'user' | 'project' | 'claude'): S
           });
         }
       }
-    } catch {}
+    } catch (e: any) {
+      // Don't silently swallow errors — at least log a warning
+      if (process.env.DEBUG_SKILLS) console.warn(`[Skills] Failed to load ${skillPath}: ${e.message}`);
+    }
   }
 
   return skills;
@@ -94,6 +152,27 @@ export class SkillLoader {
   }
 
   private load(projectDir?: string) {
+    // Built-in system skills (from the skills/ directory alongside the project root)
+    // These include the master system prompt and soul.md
+    // Resolve relative to the project's root: try both dist/ and src/ paths
+    const projectRoot = projectDir || process.cwd();
+    const systemSkillsCandidates = [
+      join(projectRoot, 'skills'),
+      join(projectRoot, '..', '..', 'skills'),
+    ];
+    // Also try the Kairo package installation directory
+    try {
+      const kairoPackageDir = dirname(require.resolve('kairo/package.json'));
+      systemSkillsCandidates.push(join(kairoPackageDir, 'skills'));
+    } catch { /* not installed as package */ }
+    
+    for (const dir of systemSkillsCandidates) {
+      if (existsSync(dir)) {
+        this.skills.push(...loadSkillDir(dir, 'system'));
+        break;
+      }
+    }
+
     // User skills (~/.kairo/skills/)
     const userSkillsDir = join(homedir(), '.kairo', 'skills');
     this.skills.push(...loadSkillDir(userSkillsDir, 'user'));
@@ -129,17 +208,46 @@ export class SkillLoader {
 
   match(request: string): Skill[] {
     const lower = request.toLowerCase();
-    return this.skills.filter(s => {
-      // Check name keywords
-      const nameKeywords = s.name.split(/[-_]/);
-      if (nameKeywords.some(kw => lower.includes(kw))) return true;
-      // Check globs
-      if (s.frontmatter?.globs) {
-        // Simple glob matching
-        return s.frontmatter.globs.some(g => lower.includes(g.replace('*', '')));
+    const scored: Array<{ skill: Skill; score: number }> = [];
+    
+    for (const s of this.skills) {
+      let score = 0;
+      
+      // Exact name match (highest priority)
+      if (s.name.toLowerCase() === lower) score += 10;
+      // Name contains query
+      else if (s.name.toLowerCase().includes(lower)) score += 5;
+      // Query contains name keyword
+      else {
+        const nameKeywords = s.name.split(/[-_]/);
+        for (const kw of nameKeywords) {
+          if (kw.length >= 2 && lower.includes(kw.toLowerCase())) score += 2;
+        }
       }
-      return false;
-    });
+      
+      // Description match
+      const desc = (s.frontmatter?.description || '').toLowerCase();
+      if (desc && desc.includes(lower)) score += 3;
+      
+      // Glob match (proper glob matching)
+      if (s.frontmatter?.globs) {
+        for (const glob of s.frontmatter?.globs) {
+          // Convert glob to regex for proper matching
+          const globRegex = glob.replace(/\*\*/g, '.+').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]');
+          try {
+            if (new RegExp(globRegex, 'i').test(request)) score += 2;
+          } catch { /* invalid glob pattern — skip */ }
+        }
+      }
+      
+      // Content match (brief)
+      if (s.content.toLowerCase().includes(lower) && score === 0) score += 1;
+      
+      if (score > 0) scored.push({ skill: s, score });
+    }
+    
+    // Return sorted by relevance score
+    return scored.sort((a, b) => b.score - a.score).map(s => s.skill);
   }
 
   getAlwaysApply(): Skill[] {

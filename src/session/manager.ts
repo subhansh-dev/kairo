@@ -25,6 +25,8 @@ export interface Session {
 export class SessionManager {
   private sessionsDir: string;
   private currentSession: Session | null = null;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private dirty = false;
 
   constructor() {
     this.sessionsDir = join(homedir(), '.kairo', 'sessions');
@@ -61,12 +63,26 @@ export class SessionManager {
     }
   }
 
+  deleteSession(id: string): boolean {
+    const path = join(this.sessionsDir, `${id}.json`);
+    if (!existsSync(path)) return false;
+    try {
+      unlinkSync(path);
+      if (this.currentSession?.id === id) {
+        this.currentSession = null;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   saveSession(session: Session): void {
     session.updatedAt = Date.now();
     const path = join(this.sessionsDir, `${session.id}.json`);
     // Atomic write: write to .tmp first, then rename (prevents corrupted JSON on crash)
     const tmpPath = path + '.tmp';
-    writeFileSync(tmpPath, JSON.stringify(session, null, 2));
+    writeFileSync(tmpPath, JSON.stringify(session, null, 2), { mode: 0o600 });
     renameSync(tmpPath, path);
   }
 
@@ -89,7 +105,33 @@ export class SessionManager {
     if (!this.currentSession) return;
     this.currentSession.messages.push(message);
     this.currentSession.tokenCount += this.estimateTokens(typeof message.content === 'string' ? message.content : JSON.stringify(message.content));
+    this.dirty = true;
+    this.scheduleSave();
+  }
+
+  private scheduleSave(): void {
+    if (this.saveTimer) return; // Already scheduled
+    this.saveTimer = setTimeout(() => {
+      this.forceSave();
+      this.saveTimer = null;
+    }, 1000); // Save every 1 second when changes happen
+  }
+
+  private forceSave(): void {
+    if (!this.dirty || !this.currentSession) return;
     this.saveSession(this.currentSession);
+    this.dirty = false;
+  }
+
+  /**
+   * Force immediate save (for critical moments like shutdown)
+   */
+  flush(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.forceSave();
   }
 
   // Context compaction — summarize old messages to save tokens

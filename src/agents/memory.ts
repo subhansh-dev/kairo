@@ -8,6 +8,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 
 const MEMORY_DIR = join(homedir(), '.kairo', 'agent-memory')
+const MAX_ENTRIES_PER_AGENT = 50
 
 function ensureDir(): void {
   if (!existsSync(MEMORY_DIR)) mkdirSync(MEMORY_DIR, { recursive: true })
@@ -48,6 +49,11 @@ export function saveMemory(agentName: string, key: string, value: string): void 
     entries[existing] = entry
   } else {
     entries.push(entry)
+  }
+
+  // Trim oldest entries if over the limit
+  if (entries.length > MAX_ENTRIES_PER_AGENT) {
+    entries.splice(0, entries.length - MAX_ENTRIES_PER_AGENT)
   }
 
   writeFileSync(filePath, JSON.stringify(entries, null, 2))

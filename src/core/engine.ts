@@ -573,14 +573,14 @@ export async function* agentLoop(
             markProviderFailed(`${provider.name}:${model}`);
             let recovered = false;
             for (const fb of getFailoverProviders(route, provider.name)) {
-              try {
-                yield { type: 'provider_switch', from: provider.name, to: fb.provider.name };
-                provider = fb.provider;
-                model = fb.model;
-                route = fb.route;
-                recovered = true;
-                break;
-              } catch { continue; }
+              // Verify the failover provider is actually reachable before claiming recovery
+              if (!fb.provider.models.includes(fb.model)) continue;
+              yield { type: 'provider_switch', from: provider.name, to: fb.provider.name };
+              provider = fb.provider;
+              model = fb.model;
+              route = fb.route;
+              recovered = true;
+              break;
             }
             if (!recovered) {
               yield { type: 'error', content: event.error };
@@ -601,14 +601,14 @@ export async function* agentLoop(
       markProviderFailed(`${provider.name}:${model}`);
       let recovered = false;
       for (const fb of getFailoverProviders(route, provider.name)) {
-        try {
-          yield { type: 'provider_switch', from: provider.name, to: fb.provider.name };
-          provider = fb.provider;
-          model = fb.model;
-          route = fb.route;
-          recovered = true;
-          break;
-        } catch { continue; }
+        // Verify the failover provider is actually reachable before claiming recovery
+        if (!fb.provider.models.includes(fb.model)) continue;
+        yield { type: 'provider_switch', from: provider.name, to: fb.provider.name };
+        provider = fb.provider;
+        model = fb.model;
+        route = fb.route;
+        recovered = true;
+        break;
       }
       if (!recovered) {
         yield { type: 'error', content: err.message };
@@ -647,10 +647,24 @@ export async function* agentLoop(
     // ── Non-verifier turn: collect tool calls ──────────────────
     const textToolCalls = extractToolCalls(turnText);
     
-    const turnToolCalls = [
-      ...pendingToolCalls.map(tc => ({ name: tc.name, args: formatToolCallArgs(tc) })),
-      ...textToolCalls,
-    ];
+    // Deduplicate: merge structured API calls and text-based calls,
+    // removing duplicates where the same tool+args appear in both sources.
+    const structuredCalls = pendingToolCalls.map(tc => ({ name: tc.name, args: formatToolCallArgs(tc) }));
+    const seenCallKeys = new Set<string>();
+    const dedupedStructured = structuredCalls.filter(tc => {
+      const key = `${tc.name}:${tc.args.slice(0, 200)}`;
+      if (seenCallKeys.has(key)) return false;
+      seenCallKeys.add(key);
+      return true;
+    });
+    const dedupedText = textToolCalls.filter(tc => {
+      const key = `${tc.name}:${tc.args.slice(0, 200)}`;
+      if (seenCallKeys.has(key)) return false;
+      seenCallKeys.add(key);
+      return true;
+    });
+    
+    const turnToolCalls = [...dedupedStructured, ...dedupedText];
     allToolCalls.push(...turnToolCalls);
 
     if (turnToolCalls.length === 0) {
@@ -661,7 +675,8 @@ export async function* agentLoop(
     }
 
     messages.push({ role: 'assistant', content: turnText });
-    let toolOutput = '';
+    // Use a structured Map for tool results instead of string concatenation + regex
+    const toolResultMap = new Map<string, string>();
 
     // ── Parallel tool execution ────────────────────────────────
     // Separate tools into: safe to parallelize (reads) and must serialize (writes/exec)
@@ -676,43 +691,97 @@ export async function* agentLoop(
       }
     }
 
-    // Execute read tools in parallel (fan-out)
+    // Execute read tools in parallel (fan-out), but cap at MAX_PARALLEL_READS
+    // to prevent flooding the filesystem/network with too many concurrent calls
+    const MAX_PARALLEL_READS = 6;
     if (readTools.length > 1) {
-      yield { type: 'thinking', content: `[Parallel: ${readTools.length} concurrent reads]` };
-      for (const tc of readTools) {
-        yield { type: 'tool_start', name: tc.name, args: tc.args };
-      }
-
-      const parallelResults = await Promise.allSettled(
-        readTools.map(async (tc) => {
-          // Safety check
-          if (tc.name === 'read') {
-            const pathMatch = tc.args.match(/^(\S+)/);
-            const filePath = pathMatch ? pathMatch[1] : tc.args;
-            const safety = checkReadSafety(filePath);
-            if (!safety.allowed) {
-              return { tc, result: { output: `Safety blocked: ${safety.reason}`, success: false } as ToolResult };
+      const batchCount = Math.min(readTools.length, MAX_PARALLEL_READS);
+      yield { type: 'thinking', content: `[Parallel: ${batchCount} concurrent reads (${readTools.length} total, capped at ${MAX_PARALLEL_READS})]` };
+      
+      // If too many, batch them — run in chunks of MAX_PARALLEL_READS
+      if (readTools.length > MAX_PARALLEL_READS) {
+        // Run first batch in parallel, rest sequentially to prevent spam
+        const parallelBatch = readTools.slice(0, MAX_PARALLEL_READS);
+        const sequentialRest = readTools.slice(MAX_PARALLEL_READS);
+        
+        for (const tc of parallelBatch) {
+          yield { type: 'tool_start', name: tc.name, args: tc.args };
+        }
+        
+        const parallelResults = await Promise.allSettled(
+          parallelBatch.map(async (tc) => {
+            if (tc.name === 'read') {
+              const pathMatch = tc.args.match(/^(\S+)/);
+              const filePath = pathMatch ? pathMatch[1] : tc.args;
+              const safety = checkReadSafety(filePath);
+              if (!safety.allowed) {
+                return { tc, result: { output: `Safety blocked: ${safety.reason}`, success: false } as ToolResult };
+              }
             }
+            const rawResult = await toolRegistry.execute(tc.name, tc.args);
+            const result = secretObfuscator?.hasSecrets()
+              ? { ...rawResult, output: secretObfuscator.obfuscate(rawResult.output) }
+              : rawResult;
+            result.output = truncateToolResult(result.output);
+            return { tc, result };
+          })
+        );
+        
+        for (const pr of parallelResults) {
+          if (pr.status === 'fulfilled') {
+            const { tc, result } = pr.value;
+            yield { type: 'tool_end', name: tc.name, result };
+            toolResultMap.set(tc.name, result.output);
+            turnBudget.addResult(tc.name, result.output.slice(0, 10000));
+            if (result.success) recordToolSuccess(tc.name);
+          } else {
+            const failedIdx = pr.reason ? 0 : 0;
+            const failedName = parallelBatch[failedIdx]?.name || 'unknown';
+            toolResultMap.set(failedName, `Parallel error: ${pr.reason}`);
           }
+        }
+        
+        // Move remaining reads to writeTools for sequential execution
+        writeTools.unshift(...sequentialRest);
+      } else {
+        // Normal parallel execution (within cap)
+        for (const tc of readTools) {
+          yield { type: 'tool_start', name: tc.name, args: tc.args };
+        }
 
-          const rawResult = await toolRegistry.execute(tc.name, tc.args);
-          const result = secretObfuscator?.hasSecrets()
-            ? { ...rawResult, output: secretObfuscator.obfuscate(rawResult.output) }
-            : rawResult;
-          result.output = truncateToolResult(result.output);
-          return { tc, result };
-        })
-      );
+        const parallelResults = await Promise.allSettled(
+          readTools.map(async (tc) => {
+            // Safety check
+            if (tc.name === 'read') {
+              const pathMatch = tc.args.match(/^(\S+)/);
+              const filePath = pathMatch ? pathMatch[1] : tc.args;
+              const safety = checkReadSafety(filePath);
+              if (!safety.allowed) {
+                return { tc, result: { output: `Safety blocked: ${safety.reason}`, success: false } as ToolResult };
+              }
+            }
 
-      for (const pr of parallelResults) {
-        if (pr.status === 'fulfilled') {
-          const { tc, result } = pr.value;
-          yield { type: 'tool_end', name: tc.name, result };
-          toolOutput += `\n\nTool ${tc.name}:\n${result.output}`;
-          turnBudget.addResult(tc.name, result.output.slice(0, 10000));
-          if (result.success) recordToolSuccess(tc.name);
-        } else {
-          toolOutput += `\n\nTool error: ${pr.reason}`;
+            const rawResult = await toolRegistry.execute(tc.name, tc.args);
+            const result = secretObfuscator?.hasSecrets()
+              ? { ...rawResult, output: secretObfuscator.obfuscate(rawResult.output) }
+              : rawResult;
+            result.output = truncateToolResult(result.output);
+            return { tc, result };
+          })
+        );
+
+        for (const pr of parallelResults) {
+          if (pr.status === 'fulfilled') {
+            const { tc, result } = pr.value;
+            yield { type: 'tool_end', name: tc.name, result };
+            toolResultMap.set(tc.name, result.output);
+            turnBudget.addResult(tc.name, result.output.slice(0, 10000));
+            if (result.success) recordToolSuccess(tc.name);
+          } else {
+            const failedIdx = 0;
+            const failedName = readTools[failedIdx]?.name || 'unknown';
+            toolResultMap.set(failedName, `Parallel error: ${pr.reason}`);
+          }
         }
       }
     } else if (readTools.length === 1) {
@@ -736,7 +805,7 @@ export async function* agentLoop(
         if (!safety.allowed) {
           const result: ToolResult = { output: `Safety blocked: ${safety.reason}`, success: false };
           yield { type: 'tool_end', name: tc.name, result };
-          toolOutput += `\n\nBlocked: ${safety.reason}`;
+          toolResultMap.set(tc.name, `Blocked: ${safety.reason}`);
           continue;
         }
       }
@@ -747,7 +816,7 @@ export async function* agentLoop(
         if (!safety.allowed) {
           const result: ToolResult = { output: `Safety blocked: ${safety.reason}`, success: false };
           yield { type: 'tool_end', name: tc.name, result };
-          toolOutput += `\n\nBlocked: ${safety.reason}`;
+          toolResultMap.set(tc.name, `Blocked: ${safety.reason}`);
           continue;
         }
       }
@@ -757,7 +826,7 @@ export async function* agentLoop(
         if (hardline.blocked) {
           const result: ToolResult = { output: `Guardrail blocked: ${hardline.reason}`, success: false };
           yield { type: 'tool_end', name: tc.name, result };
-          toolOutput += `\n\nBlocked: ${hardline.reason}`;
+          toolResultMap.set(tc.name, `Blocked: ${hardline.reason}`);
           continue;
         }
       }
@@ -766,7 +835,7 @@ export async function* agentLoop(
       if (!preResult.allowed) {
         const result: ToolResult = { output: `Blocked by hook: ${preResult.output}`, success: false };
         yield { type: 'tool_end', name: tc.name, result };
-        toolOutput += `\n\nBlocked: ${preResult.output}`;
+        toolResultMap.set(tc.name, `Blocked: ${preResult.output}`);
         continue;
       }
 
@@ -805,7 +874,8 @@ export async function* agentLoop(
           const fixResult = await runAutoFix({ enabled: true, lint: 'npx tsc --noEmit', maxRetries: 3, timeoutMs: 30000 }, projectDir);
           const feedback = buildAutoFixFeedback(fixResult);
           if (feedback) {
-            toolOutput += `\n\n${feedback}`;
+            const existingResult = toolResultMap.get(tc.name) || result.output;
+            toolResultMap.set(tc.name, existingResult + `\n\n${feedback}`);
             yield { type: 'thinking', content: '[Auto-fix: found errors after edit, feeding back to model]' };
           }
         } catch { /* auto-fix is best-effort */ }
@@ -835,26 +905,30 @@ export async function* agentLoop(
         : result.output;
       if (!withinBudget) {
         const warning = turnBudget.getOverflowWarning() || 'Turn budget exceeded';
-        toolOutput += `\n\nTool ${tc.name}:\n[${warning}]`;
+        toolResultMap.set(tc.name, `[${warning}]`);
         turnBudget.addResult(tc.name, '[exceeded]');
       } else {
         turnBudget.addResult(tc.name, formattedResult);
-        toolOutput += `\n\nTool ${tc.name}:\n${formattedResult}`;
+        toolResultMap.set(tc.name, formattedResult);
       }
     }
 
     // Send tool results as proper tool role messages
-    // This is the correct format for OpenAI-compatible APIs
-    // Each tool result needs a matching tool_call_id from the assistant message
+    // Use the structured toolResultMap instead of regex parsing on concatenated strings
     const toolCallIdMap = new Map<string, string>();
     for (const tc of pendingToolCalls) {
       toolCallIdMap.set(tc.name, tc.id || `call_${tc.name}_${Date.now()}`);
     }
+    // Generate unique IDs for text-based tool calls too
+    for (const tc of turnToolCalls) {
+      if (!toolCallIdMap.has(tc.name)) {
+        toolCallIdMap.set(tc.name, `call_${tc.name}_${Date.now()}`);
+      }
+    }
     for (const tc of turnToolCalls) {
       const toolCallId = toolCallIdMap.get(tc.name) || `call_${tc.name}_${Date.now()}`;
-      // Find the result for this tool call
-      const resultMatch = toolOutput.match(new RegExp(`Tool ${tc.name}:\n([\s\S]*?)(?=\n\nTool |$)`));
-      const resultText = resultMatch ? resultMatch[1].trim() : 'No output';
+      // Look up the result directly from the Map — no regex needed
+      const resultText = toolResultMap.get(tc.name) || 'No output';
       messages.push({
         role: 'tool' as const,
         content: resultText,

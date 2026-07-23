@@ -94,7 +94,7 @@ export class CredentialPool {
       const state: PersistedState = { credentials: allCreds, savedAt: Date.now() };
       const dir = dirname(this.persistPath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      writeFileSync(this.persistPath, JSON.stringify(state, null, 2), 'utf-8');
+      writeFileSync(this.persistPath, JSON.stringify(state, null, 2), { encoding: 'utf-8', mode: 0o600 });
       this.dirty = false;
     } catch {
       // Best-effort persistence

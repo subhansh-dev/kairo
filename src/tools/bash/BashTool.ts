@@ -47,9 +47,13 @@ export const BashTool = {
   inputSchema: bashToolInputSchema,
   description: 'Execute bash commands',
   isReadOnly(input: BashToolInput): boolean {
-    const cmd = input.command.trim().split(/\s+/)[0] || ''
     const READ_ONLY = ['cat', 'ls', 'find', 'head', 'tail', 'echo', 'pwd', 'wc', 'sort', 'uniq', 'diff', 'grep', 'git']
-    return READ_ONLY.includes(cmd)
+    // Split compound commands on &&, ||, ;, | and check every part
+    const parts = input.command.trim().split(/\s*(&&|\|\||;|\|)\s*/).filter(p => p && !/^(&&|\|\||;|\|)$/.test(p))
+    return parts.every(part => {
+      const cmd = part.split(/\s+/)[0] || ''
+      return READ_ONLY.includes(cmd)
+    })
   },
 }
 

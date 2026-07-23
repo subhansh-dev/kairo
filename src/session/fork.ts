@@ -32,7 +32,7 @@ export function forkSession(
     id,
     parentId,
     label: label || `Fork at message ${branchPoint}`,
-    messages: messages.slice(0, branchPoint + 1),
+    messages: [...messages],
     createdAt: Date.now(),
     branchPoint,
   };
