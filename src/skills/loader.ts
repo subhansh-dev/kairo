@@ -46,7 +46,7 @@ function parseFrontmatter(content: string): { meta: SkillFrontmatter; body: stri
       const key = line.slice(0, colon).trim();
       const val = line.slice(colon + 1).trim();
       // Check for array start
-      if (val === '' && line[colon + 1] === undefined || val.startsWith('[')) {
+      if ((val === '' || val === undefined) || val.startsWith('[')) {
         // Inline array like [item1, item2]
         if (val.startsWith('[')) {
           const items = val.slice(1, -1).split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
@@ -161,10 +161,17 @@ export class SkillLoader {
       join(projectRoot, '..', '..', 'skills'),
     ];
     // Also try the Kairo package installation directory
+    // Use ESM-compatible path resolution (import.meta.url) when available,
+    // fall back to process.argv[1] for CLI contexts, and skip require.resolve
+    // since it's not available in ESM/bundled builds.
     try {
-      const kairoPackageDir = dirname(require.resolve('kairo/package.json'));
-      systemSkillsCandidates.push(join(kairoPackageDir, 'skills'));
-    } catch { /* not installed as package */ }
+      // ESM: derive from import.meta.url (available when compiled as ESM)
+      if (typeof (globalThis as any).__kairo_dir === 'string') {
+        systemSkillsCandidates.push(join((globalThis as any).__kairo_dir, 'skills'));
+      } else if (process.argv[1]) {
+        systemSkillsCandidates.push(join(dirname(process.argv[1]), 'skills'));
+      }
+    } catch { /* no install path discoverable */ }
     
     for (const dir of systemSkillsCandidates) {
       if (existsSync(dir)) {
@@ -233,7 +240,9 @@ export class SkillLoader {
       if (s.frontmatter?.globs) {
         for (const glob of s.frontmatter?.globs) {
           // Convert glob to regex for proper matching
-          const globRegex = glob.replace(/\*\*/g, '.+').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]');
+          // First escape special regex chars (except our glob wildcards), then convert
+          const escaped = glob.replace(/[.+^${}()|\\]/g, '\\$&'); // escape regex specials
+          const globRegex = escaped.replace(/\\\*\\\*/g, '.+').replace(/\\\*/g, '[^/]*').replace(/\\\?/g, '[^/]');
           try {
             if (new RegExp(globRegex, 'i').test(request)) score += 2;
           } catch { /* invalid glob pattern — skip */ }

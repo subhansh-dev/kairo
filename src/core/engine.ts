@@ -116,20 +116,22 @@ function buildSystemPrompt(skills: SkillLoader, projectDir?: string): string {
 
   // Load master system prompt from skills (always-apply)
   let base = '';
-  const masterPrompt = skills.find('kairo-system-prompt');
-  if (masterPrompt) {
-    base = masterPrompt.content;
-  } else {
-    base = `You are Kairo, a coding agent. Use tools to solve problems. Don't describe what you would do — do it.`;
+
+  // Soul.md is the identity layer — inject at the very top of the system prompt
+  // so it's never compacted out and always shapes behavior
+  const soul = skills.find('soul');
+  if (soul) {
+    base += soul.content + '\n\n';
   }
 
+  const masterPrompt = skills.find('kairo-system-prompt');
+  if (masterPrompt) {
+    base += masterPrompt.content;
+  } else {
+    base += `You are Kairo, a coding agent. Use tools to solve problems. Don't describe what you would do — do it.`;
+  }
 
-
-  base += `
-
-## Available Tools
-
-${toolList}`;
+  base += `\n\n## Available Tools\n\n${toolList}`;
 
   const skillSection = skills.renderForPrompt();
   const context = buildFullContext(projectDir);
@@ -260,7 +262,9 @@ async function* streamWithRetry(
       const isRetryable = statusCode >= 500 || err.message?.includes('timeout');
       if (isRetryable && attempt < maxRetries) {
         const backoff = 1000 * Math.pow(2, attempt);
-        yield { type: 'error' as const, error: `Retry ${attempt + 1}/${maxRetries} after ${backoff}ms: ${err.message}` };
+        // Yield informational event — NOT terminal.  The caller should
+        // NOT failover on retryable errors; this generator will retry.
+        yield { type: 'error' as const, error: `Retry ${attempt + 1}/${maxRetries} after ${backoff}ms: ${err.message}`, retryable: true as const };
         await new Promise(ok => setTimeout(ok, backoff));
         continue;
       }
@@ -376,7 +380,8 @@ export async function* agentLoop(
   const turnBudget = new TurnBudgetManager();
 
   const systemPrompt = buildSystemPrompt(skillLoader!, options.projectDir);
-  const alwaysApply = skillLoader!.getAlwaysApply();
+  // alwaysApply skills — but exclude soul since it's already in the system prompt
+  const alwaysApply = skillLoader!.getAlwaysApply().filter(s => s.name !== 'soul');
   let contextPrefix = '';
   if (alwaysApply.length > 0) {
     contextPrefix = '\n\nRelevant skills:\n' + alwaysApply.map(s => `### ${s.name}\n${s.content}`).join('\n\n');
@@ -570,6 +575,11 @@ export async function* agentLoop(
             break;
 
           case 'error':
+            // Skip failover on retryable errors — streamWithRetry will retry internally
+            if (event.retryable) {
+              yield { type: 'thinking', content: `[Provider ${provider.name} retrying...]` };
+              break;
+            }
             markProviderFailed(`${provider.name}:${model}`);
             let recovered = false;
             for (const fb of getFailoverProviders(route, provider.name)) {
@@ -667,6 +677,16 @@ export async function* agentLoop(
     const turnToolCalls = [...dedupedStructured, ...dedupedText];
     allToolCalls.push(...turnToolCalls);
 
+    // ── Prevent tool call spam: cap total calls per turn ────────
+    // Models can sometimes emit dozens of tool calls in one response,
+    // which floods the system. We cap at a reasonable limit.
+    const MAX_TOOL_CALLS_PER_TURN = 20;
+    if (turnToolCalls.length > MAX_TOOL_CALLS_PER_TURN) {
+      const excess = turnToolCalls.length - MAX_TOOL_CALLS_PER_TURN;
+      yield { type: 'thinking', content: `[Anti-spam: capped tool calls from ${turnToolCalls.length} to ${MAX_TOOL_CALLS_PER_TURN} (${excess} excess calls dropped)]` };
+      turnToolCalls.splice(MAX_TOOL_CALLS_PER_TURN);
+    }
+
     if (turnToolCalls.length === 0) {
       // Text-only turn with no tools — push to history and continue
       endTurn('completed');
@@ -694,6 +714,9 @@ export async function* agentLoop(
     // Execute read tools in parallel (fan-out), but cap at MAX_PARALLEL_READS
     // to prevent flooding the filesystem/network with too many concurrent calls
     const MAX_PARALLEL_READS = 6;
+    // Overflow reads that exceeded the parallel cap — executed sequentially after the batch
+    const overflowReads: typeof turnToolCalls = [];
+
     if (readTools.length > 1) {
       const batchCount = Math.min(readTools.length, MAX_PARALLEL_READS);
       yield { type: 'thinking', content: `[Parallel: ${batchCount} concurrent reads (${readTools.length} total, capped at ${MAX_PARALLEL_READS})]` };
@@ -702,7 +725,7 @@ export async function* agentLoop(
       if (readTools.length > MAX_PARALLEL_READS) {
         // Run first batch in parallel, rest sequentially to prevent spam
         const parallelBatch = readTools.slice(0, MAX_PARALLEL_READS);
-        const sequentialRest = readTools.slice(MAX_PARALLEL_READS);
+        overflowReads.push(...readTools.slice(MAX_PARALLEL_READS));
         
         for (const tc of parallelBatch) {
           yield { type: 'tool_start', name: tc.name, args: tc.args };
@@ -740,9 +763,6 @@ export async function* agentLoop(
             toolResultMap.set(failedName, `Parallel error: ${pr.reason}`);
           }
         }
-        
-        // Move remaining reads to writeTools for sequential execution
-        writeTools.unshift(...sequentialRest);
       } else {
         // Normal parallel execution (within cap)
         for (const tc of readTools) {
@@ -785,7 +805,45 @@ export async function* agentLoop(
         }
       }
     } else if (readTools.length === 1) {
-      writeTools.unshift(readTools[0]);
+      // Single read tool — safe to run in parallel with writes, but for simplicity
+      // just push it to sequential execution with read safety checks
+      overflowReads.push(readTools[0]);
+    }
+
+    // ── Execute overflow reads sequentially (with read safety checks only) ──
+    for (const tc of overflowReads) {
+      if (options.signal?.aborted) {
+        endTurn('failed');
+        yield { type: 'error', content: 'Cancelled.' };
+        return;
+      }
+
+      yield { type: 'tool_start', name: tc.name, args: tc.args };
+
+      // Read safety check (not write safety — these are read tools)
+      if (tc.name === 'read') {
+        const pathMatch = tc.args.match(/^(\S+)/);
+        const filePath = pathMatch ? pathMatch[1] : tc.args;
+        const safety = checkReadSafety(filePath);
+        if (!safety.allowed) {
+          const result: ToolResult = { output: `Safety blocked: ${safety.reason}`, success: false };
+          yield { type: 'tool_end', name: tc.name, result };
+          toolResultMap.set(tc.name, `Blocked: ${safety.reason}`);
+          continue;
+        }
+      }
+
+      const rawResult = await toolRegistry.execute(tc.name, tc.args);
+      const result = secretObfuscator?.hasSecrets()
+        ? { ...rawResult, output: secretObfuscator.obfuscate(rawResult.output) }
+        : rawResult;
+      result.output = truncateToolResult(result.output);
+
+      yield { type: 'tool_end', name: tc.name, result };
+      toolResultMap.set(tc.name, result.output);
+      turnBudget.addResult(tc.name, result.output.slice(0, 10000));
+      if (result.success) recordToolSuccess(tc.name);
+      else hadToolFailure = true;
     }
 
     // Execute write/exec tools sequentially

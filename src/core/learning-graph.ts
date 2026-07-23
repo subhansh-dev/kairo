@@ -3,6 +3,8 @@
  * Tracks what the agent learns over time: skills used, patterns discovered,
  * user preferences, project conventions.
  * Inspired by Hermes Agent's learning_graph.py
+ *
+ * All mutating operations auto-save to disk so data persists across sessions.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
@@ -105,6 +107,21 @@ export function saveGraph(): void {
   writeFileSync(GRAPH_PATH, JSON.stringify(serializable, null, 2), 'utf-8');
 }
 
+// ─── Session Tracking ────────────────────────────────────────────
+
+export function beginSession(): void {
+  const g = getGraph();
+  g.stats.sessionsActive++;
+  saveGraph();
+}
+
+export function endSession(): void {
+  // Decrement active sessions on clean exit
+  const g = getGraph();
+  if (g.stats.sessionsActive > 0) g.stats.sessionsActive--;
+  saveGraph();
+}
+
 // ─── Skill Tracking ─────────────────────────────────────────────
 
 export function recordSkillUse(skillName: string, category: string = 'general'): void {
@@ -128,7 +145,7 @@ export function recordSkillUse(skillName: string, category: string = 'general'):
   node.useCount++;
   node.lastUsed = Date.now();
   node.state = 'active';
-  
+
   // Auto-save graph to disk after every use
   saveGraph();
 }
@@ -146,6 +163,7 @@ export function recordSkillCreation(skillName: string, fromTask: string, related
     createdFrom: fromTask,
   });
   g.stats.totalSkillsLearned++;
+  saveGraph();
 
   // Create edges to related skills
   for (const rel of related) {
@@ -161,6 +179,7 @@ export function recordMemoryAccess(key: string): void {
   if (node) {
     node.lastAccessed = Date.now();
     node.accessCount++;
+    saveGraph();
   }
 }
 
@@ -176,6 +195,7 @@ export function addMemoryNode(key: string, value: string, category: string = 'ge
     relatedSkills: [],
   });
   g.stats.totalMemories++;
+  saveGraph();
 }
 
 // ─── Pattern Tracking ───────────────────────────────────────────
@@ -202,6 +222,7 @@ export function recordPattern(pattern: string, description: string, example: str
     node.examples.push(example);
     if (node.examples.length > 5) node.examples.shift();
   }
+  saveGraph();
 }
 
 // ─── Graph Edges ────────────────────────────────────────────────
@@ -216,6 +237,7 @@ export function addEdge(from: string, to: string): void {
 
   const toEdges = g.edges.get(to)!;
   if (!toEdges.includes(from)) toEdges.push(from);
+  saveGraph();
 }
 
 export function getRelated(nodeName: string): string[] {

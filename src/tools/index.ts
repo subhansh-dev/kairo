@@ -102,22 +102,26 @@ interface ToolUsage {
 const toolUsageMap = new Map<string, ToolUsage>();
 
 // ─── Concurrency Locks ───────────────────────────────────────
-// Promise-based semaphore for async-safe locking.
-// When a non-concurrent-safe tool is running, subsequent callers
-// queue up and wait for the current execution to finish, rather
-// than being immediately rejected.
+// Promise-based chained semaphore for atomic async-safe locking.
+// Uses a chain pattern: each caller replaces the map entry with its own
+// promise BEFORE awaiting the previous one. This eliminates the race
+// condition where two callers both pass the await and then both try
+// to set their lock simultaneously.
 const toolLocks = new Map<string, Promise<void>>();
 
 async function acquireToolLock(lockKey: string): Promise<() => void> {
-  const existing = toolLocks.get(lockKey);
+  // Atomically chain: replace the map entry with our promise FIRST,
+  // then await the previous holder's promise. This guarantees that
+  // the next caller will wait on US, not skip past.
   let release: () => void;
-  const promise = new Promise<void>(resolve => { release = resolve; });
-  
-  if (existing) {
-    // Wait for the current holder to finish, then acquire
-    await existing;
+  const ourPromise = new Promise<void>(resolve => { release = resolve; });
+  const previous = toolLocks.get(lockKey) || null;
+  toolLocks.set(lockKey, ourPromise);  // atomic: set before await
+
+  if (previous) {
+    // Wait for the previous holder to finish before we proceed
+    await previous;
   }
-  toolLocks.set(lockKey, promise);
   return release!;
 }
 
@@ -344,10 +348,12 @@ export const toolRegistry: ToolRegistry = {
         metadata: { error: e.message, duration },
       };
     } finally {
-      // Release concurrency lock
+      // Release concurrency lock — just resolve the promise.
+      // Do NOT delete from the map: the next queued caller already
+      // replaced the map entry with their own promise (see acquireToolLock).
+      // Deleting would break the chain.
       if (releaseLock) {
         releaseLock();
-        toolLocks.delete(`lock:${tool.name}`);
       }
     }
   },

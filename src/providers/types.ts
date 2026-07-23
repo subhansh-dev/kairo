@@ -148,7 +148,7 @@ export type AssistantMessageEvent =
   | { type: 'tool_call_delta'; id: string; name: string; key: string; delta: string }
   | { type: 'tool_call_end'; id: string; name: string; arguments: Record<string, unknown> }
   | { type: 'usage'; usage: Usage }
-  | { type: 'error'; error: string }
+  | { type: 'error'; error: string; retryable?: boolean }
   | { type: 'done' };
 
 export type AssistantMessageEventStream = AsyncGenerator<AssistantMessageEvent>;
