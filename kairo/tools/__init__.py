@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kairo.tools.base import ToolRegistry, register_all
+from kairo.tools.code_rag import CodeRagConfig, make_code_rag_tools
 from kairo.tools.edit import EditToolsConfig, make_edit_tools
 from kairo.tools.file_ops import FileToolsConfig, make_file_tools
 from kairo.tools.guardrails import SpamGuard, SpamGuardConfig
@@ -34,6 +35,8 @@ class ToolBundleConfig:
     enable_todo: bool = True
     enable_swe: bool = True
     enable_web_design: bool = True
+    enable_code_rag: bool = True
+    enable_browser: bool = False  # opt-in — requires agent-browser CLI
     enable_swarm: bool = False  # opt-in — needs KairoConfig
     # Per-bundle tuning. Leave None to use defaults.
     file_cfg: FileToolsConfig | None = None
@@ -43,6 +46,7 @@ class ToolBundleConfig:
     web_cfg: WebToolsConfig | None = None
     swe_cfg: SWEToolsConfig | None = None
     web_design_cfg: WebDesignToolsConfig | None = None
+    code_rag_cfg: CodeRagConfig | None = None
     # Spam guard config.
     spam_guard_cfg: SpamGuardConfig = field(default_factory=SpamGuardConfig)
 
@@ -96,6 +100,18 @@ def build_default_registry(cfg: ToolBundleConfig) -> tuple[ToolRegistry, SpamGua
     if cfg.enable_web_design:
         wd_cfg = cfg.web_design_cfg or WebDesignToolsConfig(file_cfg=file_cfg)
         for fn in make_web_design_tools(wd_cfg):
+            register_all(registry, fn)
+
+    if cfg.enable_code_rag:
+        cr_cfg = cfg.code_rag_cfg or CodeRagConfig(file_cfg=file_cfg)
+        for fn in make_code_rag_tools(cr_cfg):
+            register_all(registry, fn)
+
+    if cfg.enable_browser:
+        # Imported here so the browser module is optional.
+        from kairo.tools.browser import BrowserToolsConfig, make_browser_tools
+        br_cfg = BrowserToolsConfig()
+        for fn in make_browser_tools(br_cfg):
             register_all(registry, fn)
 
     log.info("built tool registry with %d tools: %s", len(registry), registry.names())
