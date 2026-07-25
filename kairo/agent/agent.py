@@ -55,6 +55,12 @@ class AgentConfig:
     budget: Budget | None = None
     # When True, every provider response is logged to the event bus.
     emit_events: bool = True
+    # Optional path to a soul.md persona file. When set, the persona
+    # body replaces ``system_prompt``.
+    persona_path: Path | None = None
+    # When True, the agent queries the learning graph for a hint from
+    # past successful runs and injects it into the system prompt.
+    use_learning_hint: bool = True
 
 
 class Agent:
@@ -85,6 +91,14 @@ class Agent:
         self._providers: dict[str, Provider] = build_all_enabled(kairo_cfg)
         if not self._providers:
             raise KairoError("no providers are enabled; check KairoConfig.providers")
+        # Persona — load from soul.md if configured.
+        self.persona = None
+        if agent_cfg.persona_path is not None:
+            from kairo.agent.persona import load_persona
+            self.persona = load_persona(agent_cfg.persona_path)
+        # Learning graph — loads from workdir if it exists.
+        from kairo.agent.learning import LearningGraph
+        self.learning = LearningGraph.load(kairo_cfg.workdir)
         # Per-run state.
         self.messages: list[Message] = []
         self.turns: list[AgentTurn] = []
@@ -98,17 +112,32 @@ class Agent:
         self._total_cost = 0.0
         self._start_ts = 0.0
         self._cancelled = False
+        self._user_message: str = ""  # saved for learning-graph record
 
     # -- public API ----------------------------------------------------
 
     def run(self, user_message: str) -> AgentResult:
         """Run the agent loop with a single user message."""
         self._start_ts = time.time()
+        self._user_message = user_message
         emit(EventKind.AGENT_START, workspace=str(self.acfg.workspace))
 
+        # Build the system prompt: persona > explicit > default.
+        sys_prompt = self.acfg.system_prompt
+        if self.persona is not None:
+            sys_prompt = self.persona.system_prompt()
+        # Append a learning hint if available.
+        if self.acfg.use_learning_hint:
+            try:
+                hint = self.learning.hint_for(user_message)
+                if hint:
+                    sys_prompt = (sys_prompt + "\n\n" + hint) if sys_prompt else hint
+            except Exception as exc:  # noqa: BLE001
+                log.warning("learning hint failed: %s", exc)
+
         # Seed messages: system prompt + user.
-        if self.acfg.system_prompt:
-            self.messages.append(Message(role=Role.SYSTEM, content=self.acfg.system_prompt))
+        if sys_prompt:
+            self.messages.append(Message(role=Role.SYSTEM, content=sys_prompt))
         self.messages.append(Message(role=Role.USER, content=user_message))
 
         max_turns = self.budget.max_turns or self.kcfg.safety.max_turns
@@ -161,6 +190,36 @@ class Agent:
                 store.save(result, tag=finish_reason)
             except Exception as exc:  # noqa: BLE001 — persistence is best-effort
                 log.warning("could not persist run: %s", exc)
+        # Record success in the learning graph for future hints.
+        if finish_reason == "complete" and self.acfg.use_learning_hint:
+            try:
+                last_text = ""
+                for m in reversed(self.messages):
+                    if m.role == Role.ASSISTANT and m.content:
+                        last_text = m.content
+                        break
+                # Collect tools used across all turns.
+                tools_used: list[str] = []
+                for turn in self.turns:
+                    for tr in turn.tool_results:
+                        if tr.ok:
+                            tools_used.append(tr.name)
+                # Identify the model + provider from the last turn.
+                last_turn = self.turns[-1] if self.turns else None
+                if last_turn and last_turn.provider and last_turn.model:
+                    self.learning.record_success(
+                        prompt=self._user_message,
+                        system_prompt=self.acfg.system_prompt,
+                        model=last_turn.model,
+                        provider=last_turn.provider,
+                        tools_used=tools_used,
+                        tool_call_count=len(tools_used),
+                        final_text=last_text,
+                        duration_s=total_dur,
+                        tokens=self._total_tokens,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not record learning entry: %s", exc)
         emit(
             EventKind.AGENT_END,
             finish_reason=finish_reason,

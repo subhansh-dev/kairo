@@ -32,10 +32,12 @@ def cli() -> None:
 @click.argument("message")
 @click.option("--workspace", "-w", default=".", help="Workspace root.")
 @click.option("--system-prompt", "-s", default="", help="Optional system prompt.")
-@click.option("--max-turns", type=int, default=None, help="Override max turns.")
-@click.option("--config", "config_path", type=click.Path(), default=None, help="Config YAML.")
-def run(message: str, workspace: str, system_prompt: str, max_turns: int | None,
-        config_path: str | None) -> None:
+@click.option("--persona", "persona_path", type=click.Path(exists=True), default=None,
+              help="Path to a soul.md persona file.")
+@click.option("--max-turns", type=int, default=None)
+@click.option("--config", "config_path", type=click.Path(), default=None)
+def run(message: str, workspace: str, system_prompt: str, persona_path: str | None,
+        max_turns: int | None, config_path: str | None) -> None:
     """Run Kairo once with a single message."""
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
@@ -45,6 +47,7 @@ def run(message: str, workspace: str, system_prompt: str, max_turns: int | None,
             workspace=Path(workspace).resolve(),
             system_prompt=system_prompt,
             max_turns=max_turns,
+            persona_path=Path(persona_path) if persona_path else None,
         ),
     )
     result = agent.run(message)
@@ -271,6 +274,36 @@ def explore(message: str, workspace: str, n: int, strategy: str,
         f"chosen={result.chosen.subtask.id}]",
         err=True,
     )
+
+
+@cli.command()
+@click.option("--persona", "persona_path", type=click.Path(exists=True),
+              default="soul.md", help="Path to a soul.md file.")
+def soul(persona_path: str | None) -> None:
+    """Print the active persona / system prompt."""
+    from kairo.agent import load_persona, default_persona
+    from pathlib import Path
+    if persona_path and Path(persona_path).is_file():
+        p = load_persona(persona_path)
+    else:
+        p = default_persona()
+    click.echo(p.system_prompt(with_metadata=True))
+
+
+@cli.command()
+@click.option("--workdir", "-w", default=None,
+              help="Kairo workdir (defaults to ~/.kairo).")
+def learning(workdir: str | None) -> None:
+    """Show stats from the learning graph."""
+    from pathlib import Path
+    from kairo.agent import LearningGraph
+    from kairo.config import load_config
+    import json
+    cfg = load_config()
+    wd = Path(workdir) if workdir else cfg.workdir
+    g = LearningGraph.load(wd)
+    stats = g.stats()
+    click.echo(json.dumps(stats, indent=2, default=str))
 
 
 def main() -> None:
