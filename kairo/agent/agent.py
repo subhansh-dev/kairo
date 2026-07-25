@@ -39,6 +39,7 @@ from kairo.types import (
     ToolResult,
 )
 from kairo.utils import EventKind, emit, get_logger, get_event_bus
+from kairo.tracing import span
 
 log = get_logger("agent")
 
@@ -118,6 +119,11 @@ class Agent:
 
     def run(self, user_message: str) -> AgentResult:
         """Run the agent loop with a single user message."""
+        with span("agent.run", user_message=user_message[:200],
+                  workspace=str(self.acfg.workspace)) as root_span:
+            return self._run_inner(user_message, root_span)
+
+    def _run_inner(self, user_message: str, root_span) -> AgentResult:
         self._start_ts = time.time()
         self._user_message = user_message
         emit(EventKind.AGENT_START, workspace=str(self.acfg.workspace))
@@ -245,6 +251,10 @@ class Agent:
     # -- per-turn internals --------------------------------------------
 
     def _run_turn(self, turn_idx: int) -> AgentTurn:
+        with span("agent.turn", turn_idx=turn_idx) as turn_span:
+            return self._run_turn_inner(turn_idx, turn_span)
+
+    def _run_turn_inner(self, turn_idx: int, turn_span) -> AgentTurn:
         started = time.time()
         self.guard.begin_turn()
 
@@ -295,12 +305,15 @@ class Agent:
 
         # 5. Call provider.
         try:
-            response = provider.complete(
-                messages=request_messages,
-                tools=tools if tools else None,
-                model=model.name,
-                temperature=0.0,
-            )
+            with span("provider.complete",
+                      provider=model.provider, model=model.name,
+                      phase=plan.phase, est_tokens=ctx_tokens):
+                response = provider.complete(
+                    messages=request_messages,
+                    tools=tools if tools else None,
+                    model=model.name,
+                    temperature=0.0,
+                )
         except KairoError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -325,6 +338,21 @@ class Agent:
         )
         self.messages.append(assistant_msg)
 
+        # 7.5. Fallback: if the provider didn't parse any tool calls but the
+        # response text contains tool-call-shaped blocks, run the grammar
+        # extractor. This catches tiny-model output the provider missed.
+        if not response.tool_calls and response.content and tools:
+            try:
+                from kairo.agent.tool_grammar import extract_tool_calls_grammar
+                grammar_result = extract_tool_calls_grammar(response.content, self.registry)
+                if grammar_result.calls:
+                    response.tool_calls = grammar_result.calls
+                    assistant_msg.tool_calls = grammar_result.calls
+                    log.info("tool_grammar fallback extracted %d calls from response text",
+                             len(grammar_result.calls))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("tool_grammar fallback failed: %s", exc)
+
         # 8. Dispatch tool calls.
         tool_results: list[ToolResult] = []
         if response.tool_calls:
@@ -348,7 +376,9 @@ class Agent:
                     allowed_calls.append(call)
             # Dispatch only the allowed subset through the spam guard.
             if allowed_calls:
-                dispatch = self.dispatcher.dispatch(allowed_calls)
+                with span("tool.dispatch", call_count=len(allowed_calls),
+                          tool_names=[c.name for c in allowed_calls]):
+                    dispatch = self.dispatcher.dispatch(allowed_calls)
                 tool_results.extend(dispatch.results)
             # Safety filter on all results (incl. blocked/denied).
             for tr in tool_results:
