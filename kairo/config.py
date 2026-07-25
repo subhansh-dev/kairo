@@ -61,6 +61,13 @@ class SafetyConfig:
     # When True, the agent loop will pause and ask the user before any
     # tool tagged "dangerous" runs. Off by default for non-interactive use.
     interactive_confirm: bool = False
+    # When True, run InputFilter on every user message + OutputFilter on
+    # every assistant message. Defaults to True so PII/secrets/injection
+    # are caught automatically.
+    enable_moderation: bool = True
+    # When True, the agent loop calls the global BudgetEnforcer before
+    # each provider call. Set budget limits via the enforcer directly.
+    enable_budget_enforcement: bool = False
 
 
 @dataclass(slots=True)

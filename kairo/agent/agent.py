@@ -91,6 +91,24 @@ class Agent:
         self.orchestrator = Orchestrator(kairo_cfg, self.catalog)
         self.context_mgr = ContextManager(kairo_cfg.context)
         self.safety = SafetyFilter(kairo_cfg.safety)
+        # Moderation filters (input + output).
+        if kairo_cfg.safety.enable_moderation:
+            from kairo.agent.moderation import InputFilter, OutputFilter
+            self.input_filter: InputFilter | None = InputFilter()
+            self.output_filter: OutputFilter | None = OutputFilter()
+        else:
+            self.input_filter = None
+            self.output_filter = None
+        # Budget enforcer (optional, opt-in via config).
+        if kairo_cfg.safety.enable_budget_enforcement:
+            from kairo.agent.budget_enforcer import get_global_enforcer
+            self._budget_enforcer = get_global_enforcer()
+            # Per-run scope so each run gets its own limit pool if configured.
+            import uuid
+            self._budget_scope = f"run:{uuid.uuid4().hex[:12]}"
+        else:
+            self._budget_enforcer = None
+            self._budget_scope = None
         # Provider pool — built once, reused across turns.
         self._providers: dict[str, Provider] = build_all_enabled(kairo_cfg)
         if not self._providers:
@@ -130,6 +148,26 @@ class Agent:
         self._start_ts = time.time()
         self._user_message = user_message
         emit(EventKind.AGENT_START, workspace=str(self.acfg.workspace))
+
+        # Apply input moderation if enabled.
+        if self.input_filter is not None:
+            mod_result = self.input_filter.check(user_message)
+            if mod_result.action.value == "block":
+                # Refuse the input entirely.
+                self.messages.append(Message(role=Role.USER, content=user_message))
+                self.messages.append(Message(
+                    role=Role.ASSISTANT,
+                    content=mod_result.text,
+                    meta={"moderated": True, "rules": mod_result.rules_triggered},
+                ))
+                return AgentResult(
+                    messages=self.messages, turns=[],
+                    finish_reason="moderation_block",
+                    total_tokens=0, total_cost_usd=0.0,
+                    total_duration_s=0.0,
+                    error=f"input blocked by moderation: {mod_result.reason}",
+                )
+            user_message = mod_result.text  # may be redacted
 
         # Build the system prompt: persona > explicit > default.
         sys_prompt = self.acfg.system_prompt
@@ -328,6 +366,20 @@ class Agent:
         )
 
         # 5. Call provider.
+        # Budget enforcement: check before the call.
+        if self._budget_enforcer is not None and self._budget_scope is not None:
+            from kairo.errors import BudgetExceeded
+            try:
+                self._budget_enforcer.check_and_reserve(
+                    self._budget_scope,
+                    est_turns=1,
+                    # We don't know cost/tokens ahead of time, so only
+                    # check turns here. Usage is recorded after the call.
+                )
+            except BudgetExceeded as exc:
+                raise BudgetExceeded(
+                    f"budget exhausted before turn {turn_idx}: {exc}"
+                ) from exc
         try:
             with span("provider.complete",
                       provider=model.provider, model=model.name,
@@ -343,12 +395,30 @@ class Agent:
         except Exception as exc:  # noqa: BLE001
             raise KairoError(f"provider {model.provider} failed: {exc}") from exc
 
+        # 5.5. Record usage with the budget enforcer.
+        if self._budget_enforcer is not None and self._budget_scope is not None:
+            usage = response.usage or {}
+            self._budget_enforcer.record_usage(
+                self._budget_scope,
+                cost_usd=_estimate_cost(response, model),
+                tokens=usage.get("total_tokens", 0),
+                turns=1,
+            )
+
         # 6. Track usage / cost.
         if response.usage:
             self._total_tokens += response.usage.get("total_tokens", 0)
         self._total_cost += _estimate_cost(response, model)
 
         # 7. Append assistant message.
+        # Apply output moderation first — redact secrets/PII from the response.
+        if self.output_filter is not None and response.content:
+            mod_result = self.output_filter.check(response.content)
+            if mod_result.action.value == "block":
+                response.content = mod_result.text
+                response.tool_calls = []  # don't act on blocked output
+            elif mod_result.action.value == "redact":
+                response.content = mod_result.text
         assistant_msg = Message(
             role=Role.ASSISTANT,
             content=response.content,
