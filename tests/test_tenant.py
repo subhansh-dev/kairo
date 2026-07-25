@@ -117,13 +117,14 @@ def test_tenant_isolation_separate_budgets(tmp_path: Path):
     mgr = TenantManager(tmp_path)
     alice = mgr.get_or_create("alice")
     bob = mgr.get_or_create("bob")
-    from kairo.agent.budget_enforcer import BudgetLimit, get_global_enforcer
-    enforcer = get_global_enforcer()
-    alice.set_budget_limit(BudgetLimit(max_turns=5))
+    from kairo.agent.budget_enforcer import BudgetLimit, BudgetEnforcer
+    # Use a fresh enforcer (not the global singleton) to avoid cross-test pollution.
+    enforcer = BudgetEnforcer(tmp_path / "budgets.json")
+    enforcer.set_limit("user:alice", BudgetLimit(max_turns=5))
     enforcer.record_usage("user:alice", turns=3)
     # Alice should have usage; Bob should not.
-    assert alice.get_usage().turns == 3
-    assert bob.get_usage().turns == 0
+    assert enforcer.get_usage("user:alice").turns == 3
+    assert enforcer.get_usage("user:bob").turns == 0
 
 
 def test_tenant_build_agent(tmp_path: Path, monkeypatch):
