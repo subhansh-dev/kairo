@@ -34,13 +34,24 @@ def cli() -> None:
 @click.option("--system-prompt", "-s", default="", help="Optional system prompt.")
 @click.option("--persona", "persona_path", type=click.Path(exists=True), default=None,
               help="Path to a soul.md persona file.")
+@click.option("--preset", type=click.Choice([
+    "coding-agent", "research-agent", "data-analyst", "reviewer", "minimal",
+]), default=None, help="Use a built-in preset (overrides --system-prompt).")
 @click.option("--max-turns", type=int, default=None)
 @click.option("--config", "config_path", type=click.Path(), default=None)
 def run(message: str, workspace: str, system_prompt: str, persona_path: str | None,
-        max_turns: int | None, config_path: str | None) -> None:
+        preset: str | None, max_turns: int | None, config_path: str | None) -> None:
     """Run Kairo once with a single message."""
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    # Apply preset if specified.
+    if preset:
+        from kairo.presets import get_preset
+        p = get_preset(preset)
+        cfg = p.apply_to_kairo_config(cfg)
+        system_prompt = p.persona_body
+        if max_turns is None:
+            max_turns = p.max_turns
     agent = Agent(
         cfg,
         AgentConfig(
@@ -114,6 +125,14 @@ def models() -> None:
             f"caps={caps}"
         )
     click.echo("\n".join(rows))
+
+
+@cli.command()
+def presets() -> None:
+    """List built-in agent presets."""
+    from kairo.presets import PRESETS
+    for name, p in PRESETS.items():
+        click.echo(f"  {name:<20}  {p.description}")
 
 
 @cli.command()
