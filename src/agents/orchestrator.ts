@@ -360,20 +360,46 @@ export async function runAgent(
   const toolCalls: AgentRunResult['toolCalls'] = [];
   let turns = 0;
 
+  // Build tool definitions for the API if the agent has tools enabled.
+  const apiTools = agent.enableTools
+    ? toolRegistry.getAll().map(t => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters || {
+          type: 'object' as const,
+          properties: {},
+          description: t.prompt || t.description,
+        },
+        tier: t.tier,
+        concurrencySafe: t.concurrencySafe,
+      }))
+    : undefined;
+
   for (let turn = 0; turn < agent.maxTurns; turn++) {
     turns++;
 
     // Stream response from model for real-time feedback
     let turnContent = '';
+    const structuredToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
+
     for await (const event of provider.stream(messages, model, {
       reasoning: route.thinking ? 'high' : undefined,
       signal: options.signal,
+      tools: apiTools,
+      toolChoice: apiTools ? 'auto' as const : undefined,
     })) {
       if (event.type === 'text') {
         turnContent += event.text;
         onEvent?.({ type: 'text', content: event.text });
       } else if (event.type === 'thinking_delta') {
         onEvent?.({ type: 'thinking', content: event.delta });
+      } else if (event.type === 'tool_call_end') {
+        // Structured tool call from the API — accumulate it.
+        structuredToolCalls.push({
+          id: event.id,
+          name: event.name,
+          arguments: event.arguments,
+        });
       } else if (event.type === 'error') {
         onEvent?.({ type: 'error', error: event.error });
         break;
@@ -384,13 +410,46 @@ export async function runAgent(
 
     // Check for tool calls if agent has tools enabled
     if (agent.enableTools) {
+      // Use structured API tool calls first, then fall back to text-based parsing.
       const { extractToolCalls } = await import('../tools/types.js');
-      const calls = extractToolCalls(turnContent);
+      const { flattenArgs } = await import('../tools/arg-normalize.js');
+      const textCalls = extractToolCalls(turnContent);
+
+      // Convert structured calls to the same format as text calls.
+      const structuredAsText = structuredToolCalls.map(tc => ({
+        name: tc.name,
+        args: typeof tc.arguments === 'string'
+          ? tc.arguments
+          : flattenArgs(tc.name, JSON.stringify(tc.arguments)),
+      }));
+
+      // Merge + dedupe.
+      const allCalls = [...structuredAsText, ...textCalls];
+      const seenKeys = new Set<string>();
+      const calls = allCalls.filter(c => {
+        const key = `${c.name}:${c.args.slice(0, 200)}`;
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
+        return true;
+      });
 
       if (calls.length === 0) break; // No tools — done
 
+      // Push assistant message WITH tool_calls if we got structured calls.
+      const assistantMsg: any = { role: 'assistant', content: turnContent };
+      if (structuredToolCalls.length > 0) {
+        assistantMsg.tool_calls = structuredToolCalls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments),
+          },
+        }));
+      }
+      messages.push(assistantMsg);
+
       // Execute tools — parallelize reads, serialize writes
-      messages.push({ role: 'assistant', content: turnContent });
       let toolOutput = '';
       let agentToolCount = 0;
 
@@ -443,7 +502,26 @@ export async function runAgent(
       // Update subagent tracker with progress
       trackSubagentProgress(trackerId, agentToolCount);
 
-      messages.push({ role: 'user', content: `Tool results:${toolOutput}` });
+      // Push tool results as proper tool role messages (not user messages).
+      // This is required for OpenAI-compatible APIs — tool results must use
+      // role='tool' with a tool_call_id matching the assistant's tool_call.
+      if (structuredToolCalls.length > 0) {
+        // Structured: push individual tool messages with tool_call_id.
+        for (const tc of structuredToolCalls) {
+          const matchingCall = calls.find(c => c.name === tc.name);
+          const resultText = matchingCall
+            ? (toolCalls.find(tcl => tcl.name === tc.name)?.result?.output || 'No output')
+            : 'No output';
+          messages.push({
+            role: 'tool' as const,
+            content: resultText,
+            tool_call_id: tc.id,
+          } as any);
+        }
+      } else {
+        // Text-based: push as user message (legacy fallback).
+        messages.push({ role: 'user', content: `Tool results:${toolOutput}` });
+      }
     } else {
       break; // No tools enabled — single turn
     }
