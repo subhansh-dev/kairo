@@ -1,0 +1,48 @@
+{
+  "name": "coding-basics",
+  "description": "Basic coding tasks that any Kairo agent should pass.",
+  "tasks": [
+    {
+      "id": "write_file",
+      "prompt": "Use the write_file tool to create a file called 'hello.txt' containing the text 'kairo was here'.",
+      "check": {"kind": "file_contains", "path": "hello.txt"},
+      "expected": "kairo was here"
+    },
+    {
+      "id": "list_dir",
+      "prompt": "Use the list_dir tool to list the current directory. Then tell me what files you see.",
+      "check": {"kind": "string_match", "case_sensitive": false},
+      "expected": "hello.txt"
+    },
+    {
+      "id": "echo_shell",
+      "prompt": "Use the shell tool to run `echo kairo-works` and tell me the output.",
+      "check": {"kind": "string_match"},
+      "expected": "kairo-works"
+    },
+    {
+      "id": "python_calc",
+      "prompt": "Use the run_python tool to compute 2+2 and tell me the result.",
+      "check": {"kind": "string_match"},
+      "expected": "4"
+    },
+    {
+      "id": "write_python_module",
+      "prompt": "Create a Python file called 'math_utils.py' with a function `add(a, b)` that returns a + b. Then run `python -c 'from math_utils import add; print(add(2, 3))'` to verify it works.",
+      "check": {"kind": "shell_check", "command": "python -c 'from math_utils import add; assert add(2, 3) == 5'"},
+      "expected_code": 0
+    },
+    {
+      "id": "edit_existing_file",
+      "prompt": "Create a file 'config.txt' with content 'version=1'. Then use edit_file to change '1' to '2'. Tell me the final content.",
+      "check": {"kind": "file_contains", "path": "config.txt"},
+      "expected": "version=2"
+    },
+    {
+      "id": "grep_for_pattern",
+      "prompt": "Create a file 'app.py' with content 'def foo():\\n    pass\\ndef bar():\\n    pass'. Then use grep to find all lines containing 'def'. Tell me how many functions you found.",
+      "check": {"kind": "string_match"},
+      "expected": "2"
+    }
+  ]
+}
