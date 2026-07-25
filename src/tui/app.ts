@@ -232,6 +232,19 @@ export async function tui() {
 
   // Wire interrupt signal from ESC/Ctrl+C keybindings
   engine.setKeybindingHandler((action: string) => {
+    // Scroll handling — works even when agent is running.
+    if (action === 'scroll.up') {
+      engine.scrollUp(10);
+      return;
+    }
+    if (action === 'scroll.down') {
+      engine.scrollDown(10);
+      return;
+    }
+    if (action === 'scroll.bottom') {
+      engine.scrollToBottom();
+      return;
+    }
     // When agent overlay is visible, forward interrupt/close to it
     if (agentOverlay.isVisible()) {
       if (action === 'interrupt' || action === 'agents.toggle') {
@@ -339,6 +352,9 @@ export async function tui() {
               } else {
                 chatComp.setMessages([...msgs, { role: 'assistant' as const, content: event.content }]);
               }
+              // Auto-scroll: stay at bottom for new text, but don't yank
+              // the user back if they've scrolled up to read history.
+              engine.autoScrollIfAtBottom();
               engine.requestDiffRender();
               break;
             }

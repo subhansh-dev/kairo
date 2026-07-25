@@ -44,6 +44,8 @@ export class TUIEngine {
   private sigwinchHandler: (() => void) | null = null;
   private dataHandler: ((data: Buffer) => void) | null = null;
   private globalInputHandler: ((char: string) => boolean) | null = null;
+  private scrollOffset: number = 0;  // 0 = bottom (newest); >0 = scrolled up
+  private allLines: readonly string[] = [];  // last rendered lines for scroll
 
   constructor(stdin: NodeJS.ReadStream = process.stdin, stdout: NodeJS.WriteStream = process.stdout) {
     this.stdin = stdin;
@@ -72,6 +74,52 @@ export class TUIEngine {
 
   setGlobalInputHandler(handler: ((char: string) => boolean) | null): void {
     this.globalInputHandler = handler;
+  }
+
+  /** Scroll up by N lines (to see older output). */
+  scrollUp(lines: number = 10): void {
+    const maxScroll = Math.max(0, this.allLines.length - this.height + 1);
+    this.scrollOffset = Math.min(this.scrollOffset + lines, maxScroll);
+    this.cache = null;  // force full re-render
+    this.requestRender();
+  }
+
+  /** Scroll down by N lines (toward newer output). */
+  scrollDown(lines: number = 10): void {
+    this.scrollOffset = Math.max(0, this.scrollOffset - lines);
+    if (this.scrollOffset === 0) {
+      this.cache = null;
+      this.requestRender();
+    } else {
+      this.cache = null;
+      this.requestRender();
+    }
+  }
+
+  /** Reset scroll to bottom (newest output). Only called by user action. */
+  scrollToBottom(): void {
+    if (this.scrollOffset > 0) {
+      this.scrollOffset = 0;
+      this.cache = null;
+      this.requestRender();
+    }
+  }
+
+  /** Auto-scroll to bottom only if user is already at the bottom.
+   * Called when new content arrives. If the user has scrolled up to
+   * read older output, don't yank them back to the bottom. */
+  autoScrollIfAtBottom(): void {
+    // If already at bottom, stay at bottom (new content flows naturally).
+    // If scrolled up, do nothing — user is reading history.
+    if (this.scrollOffset === 0) {
+      // Already at bottom — no action needed, the render will show
+      // the newest content automatically.
+    }
+  }
+
+  /** Whether the user is currently scrolled up (not at the bottom). */
+  isScrolledUp(): boolean {
+    return this.scrollOffset > 0;
   }
 
   startAnimation(intervalMs: number = 80): void {
@@ -344,19 +392,40 @@ export class TUIEngine {
   }
 
   private renderFull(lines: readonly string[]): void {
+    this.allLines = lines;
     this.stdout.write(CURSOR_HOME);
     this.stdout.write(ERASE_DISPLAY);
     // Auto-scroll: show the LAST N lines that fit on screen, not the first N.
-    // This ensures the user always sees the newest output when the
-    // conversation exceeds the terminal height.
+    // If the user has scrolled up, show from the scrolled position.
     const visibleCount = Math.min(lines.length, this.height - 1);
-    const startIdx = Math.max(0, lines.length - visibleCount);
+    let startIdx: number;
+    if (this.scrollOffset > 0) {
+      // User scrolled up — show from (bottom - scrollOffset).
+      startIdx = Math.max(0, lines.length - visibleCount - this.scrollOffset);
+    } else {
+      // Normal — show the tail (newest output).
+      startIdx = Math.max(0, lines.length - visibleCount);
+    }
     for (let i = 0; i < visibleCount; i++) {
       this.stdout.write(lines[startIdx + i] + '\r\n');
+    }
+    // Show scroll indicator if scrolled up.
+    if (this.scrollOffset > 0) {
+      const indicator = `↑ scrolled up ${this.scrollOffset} lines (PageDn to go down)`;
+      this.stdout.write(`\x1b[${this.height};1H\x1b[2K\x1b[33m${indicator}\x1b[0m`);
     }
   }
 
   private renderDiff(oldLines: readonly string[], newLines: readonly string[]): void {
+    this.allLines = newLines;
+    // If user is scrolled up, don't auto-scroll — just update the display
+    // at the current scroll position. New content will be visible when they
+    // scroll back to the bottom.
+    if (this.scrollOffset > 0) {
+      // Force a full render at the scrolled position.
+      this.renderFull(newLines);
+      return;
+    }
     // Both oldLines and newLines are the FULL line arrays. We need to
     // compute the visible window (tail) for both, then diff within that
     // window. This ensures scrolling works: when new lines push old lines

@@ -73,6 +73,10 @@ export class KeybindingsManager {
       'f2': 'status',
       'f3': 'tools',
       'f5': 'retry',
+      'pageup': 'scroll.up',
+      'pagedown': 'scroll.down',
+      'home': 'scroll.bottom',
+      'end': 'scroll.bottom',
     };
 
     // Add alt+letter defaults (prefix commands)
