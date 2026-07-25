@@ -294,14 +294,28 @@ export class ChatComponent implements Component {
       const statusIcon = tool.status === 'running' ? `${c.warning}●${R}` : tool.status === 'success' ? `${c.success}✓${R}` : `${c.error}✗${R}`;
       const sep = `${c.muted}┊${R}`;
       const timing = tool.durationMs ? ` ${D}${c.muted}(${tool.durationMs < 1000 ? Math.round(tool.durationMs) + 'ms' : (tool.durationMs / 1000).toFixed(1) + 's'})${R}` : '';
-      const argsPreview = tool.args?.slice(0, 40) || '';
+      // Flatten JSON args for display so the user sees the actual query/command
+      // instead of raw JSON like {"query":"now"}.
+      let argsPreview = tool.args?.slice(0, 60) || '';
+      if (argsPreview.trim().startsWith('{')) {
+        try {
+          // Simple extraction: try to pull out the first string value.
+          const match = argsPreview.match(/"([^"]+)"\s*:\s*"([^"]+)"/);
+          if (match) {
+            argsPreview = `${match[1]}="${match[2]}"`;
+          }
+        } catch {
+          // Keep raw on parse failure.
+        }
+      }
       lines.push(`  ${statusIcon} ${sep} ${B}${c.accent}${tool.name}${R}${timing} ${D}${argsPreview}${R}`);
       if (tool.result && tool.status === 'success') {
-        const preview = tool.result.slice(0, 80).replace(/\n/g, ' ');
+        // Show more of the result — 200 chars instead of 80.
+        const preview = tool.result.slice(0, 200).replace(/\n/g, ' ');
         lines.push(`    ${sep} ${D}${preview}${R}`);
       }
       if (tool.result && tool.status === 'error') {
-        const preview = tool.result.slice(0, 80).replace(/\n/g, ' ');
+        const preview = tool.result.slice(0, 200).replace(/\n/g, ' ');
         lines.push(`    ${sep} ${c.error}${preview}${R}`);
       }
     }

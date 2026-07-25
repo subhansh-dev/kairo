@@ -311,9 +311,23 @@ export const toolRegistry: ToolRegistry = {
       }
     }
 
+    // Normalize args: if the model sent JSON args (e.g. {"query":"now"}),
+    // flatten them to the string format the tool expects (e.g. "now").
+    // This bridges the gap between models that emit JSON tool calls and
+    // Kairo's tools that take flat string args.
+    let normalizedArgs = args;
+    if (args && args.trim().startsWith('{')) {
+      try {
+        const { flattenArgs } = await import('./arg-normalize.js');
+        normalizedArgs = flattenArgs(name, args);
+      } catch {
+        // If import fails, use raw args.
+      }
+    }
+
     // Execute
     try {
-      const result = await tool.execute(args, signal);
+      const result = await tool.execute(normalizedArgs, signal);
       const duration = Date.now() - startTime;
 
       // Track usage
