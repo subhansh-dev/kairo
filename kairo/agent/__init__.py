@@ -56,6 +56,7 @@ from kairo.agent.patterns import (
 from kairo.agent.persona import Persona, default_persona, load_persona
 from kairo.agent.reflexion import ReflexionResult, default_critic, llm_critic_factory, reflexion_run
 from kairo.agent.safety import SafetyFilter
+from kairo.agent.skills import Skill, SkillLoader, load_skill
 from kairo.agent.self_improve import (
     Suggestion,
     SuggestionKind,
@@ -68,6 +69,13 @@ from kairo.agent.structured import (
     coerce_to_schema,
     parse_json_lenient,
     validate_against_schema,
+)
+from kairo.agent.tot import (
+    SelfRefineResult,
+    Thought,
+    ToTResult,
+    self_refine,
+    tree_of_thoughts,
 )
 
 __all__ = [
@@ -103,4 +111,9 @@ __all__ = [
     "AgentMemory", "EpisodicMemory", "EpisodicEvent",
     "SemanticMemory", "SemanticFact",
     "ProceduralMemory", "ProceduralSkill",
+    # ToT + self-refine
+    "tree_of_thoughts", "ToTResult", "Thought",
+    "self_refine", "SelfRefineResult",
+    # skills
+    "Skill", "SkillLoader", "load_skill",
 ]
