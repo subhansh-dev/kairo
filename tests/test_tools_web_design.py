@@ -115,22 +115,30 @@ def test_preview_html_file_not_found(tmp_workspace):
 def test_start_and_stop_dev_server(tmp_workspace):
     reg = _build(tmp_workspace)
     (tmp_workspace / "index.html").write_text("<h1>hi</h1>")
-    # Pick a high port to avoid conflicts.
-    out = reg.get("start_dev_server").fn(port=18923)
-    assert "http://127.0.0.1:18923/" in out
+    # Pick a random free port to avoid collisions with other tests.
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    out = reg.get("start_dev_server").fn(port=port)
+    assert f"http://127.0.0.1:{port}/" in out
     # Verify it serves.
     import urllib.request
-    resp = urllib.request.urlopen("http://127.0.0.1:18923/index.html", timeout=3)
+    resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/index.html", timeout=3)
     body = resp.read().decode()
     assert "<h1>hi</h1>" in body
     # Stop it.
-    out2 = reg.get("stop_dev_server").fn(port=18923)
+    out2 = reg.get("stop_dev_server").fn(port=port)
     assert "stopped" in out2.lower()
 
 
 def test_dev_server_already_running_returns_message(tmp_workspace):
     reg = _build(tmp_workspace)
-    reg.get("start_dev_server").fn(port=18924)
-    out = reg.get("start_dev_server").fn(port=18924)
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    reg.get("start_dev_server").fn(port=port)
+    out = reg.get("start_dev_server").fn(port=port)
     assert "already running" in out
-    reg.get("stop_dev_server").fn(port=18924)
+    reg.get("stop_dev_server").fn(port=port)
