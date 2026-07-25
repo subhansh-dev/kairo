@@ -160,19 +160,96 @@ export function extractToolCalls(text: string): ExtractedToolCall[] {
     }
   }
 
-  // Also handle bare JSON objects with "name" and "arguments" fields
-  // (some models emit them without XML wrapping).
+  // Also handle bare JSON objects with "name" or "tool" field.
+  // Some models (Nemotron, etc.) emit bare JSON like:
+  //   {"tool": "web_search", "args": {"query": "today"}}
+  //   {"name": "web_search", "arguments": {"query": "today"}}
+  //   {"tool": "web_search", "arguments": {"query": "today"}}
+  // without any XML wrapping. We need to catch ALL these variants.
   if (calls.length === 0) {
-    const bareJsonRegex = /\{"name"\s*:\s*"([a-zA-Z_][a-zA-Z0-9_-]*)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\}/g;
-    let bareMatch: RegExpExecArray | null;
-    while ((bareMatch = bareJsonRegex.exec(text)) !== null) {
-      const toolName = bareMatch[1].toLowerCase();
-      const argsJson = bareMatch[2];
-      calls.push({
-        name: toolName,
-        args: argsJson,
-        raw: bareMatch[0],
-      });
+    // Find all top-level JSON objects in the text by scanning for `{`
+    // and trying to parse from each position. This handles nested braces
+    // in the arguments field (which a simple regex can't).
+    let searchPos = 0;
+    while (searchPos < text.length) {
+      const braceIdx = text.indexOf('{', searchPos);
+      if (braceIdx === -1) break;
+
+      // Try to parse a JSON object starting at braceIdx.
+      // Find the matching closing brace.
+      let depth = 0;
+      let endIdx = -1;
+      let inString = false;
+      let escape = false;
+      for (let i = braceIdx; i < text.length; i++) {
+        const ch = text[i];
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escape = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            endIdx = i;
+            break;
+          }
+        }
+      }
+      if (endIdx === -1) {
+        searchPos = braceIdx + 1;
+        continue;
+      }
+
+      const jsonStr = text.slice(braceIdx, endIdx + 1);
+      searchPos = endIdx + 1;
+
+      // Try to parse.
+      let parsed: any;
+      try {
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        // Try single-quote repair.
+        try {
+          const repaired = jsonStr.replace(/'/g, '"');
+          parsed = JSON.parse(repaired);
+        } catch {
+          continue;
+        }
+      }
+
+      // Check if this looks like a tool call.
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const toolName = parsed.name || parsed.tool || parsed.function;
+        if (typeof toolName === 'string' && toolName.length > 0) {
+          let argsStr: string;
+          if (parsed.arguments && typeof parsed.arguments === 'object') {
+            argsStr = JSON.stringify(parsed.arguments);
+          } else if (parsed.args && typeof parsed.args === 'object') {
+            argsStr = JSON.stringify(parsed.args);
+          } else if (parsed.arguments && typeof parsed.arguments === 'string') {
+            argsStr = parsed.arguments;
+          } else if (parsed.args && typeof parsed.args === 'string') {
+            argsStr = parsed.args;
+          } else {
+            argsStr = '{}';
+          }
+          calls.push({
+            name: toolName.toLowerCase(),
+            args: argsStr,
+            raw: jsonStr,
+          });
+        }
+      }
     }
   }
 

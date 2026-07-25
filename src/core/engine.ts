@@ -458,6 +458,10 @@ export async function* agentLoop(
   let verifierIteration = 0;
   let verifierFeedback = '';
   const maxVerifierIterations = 3;
+  // Repetition loop guard: track recent turn texts to detect when the
+  // model is stuck generating the same output over and over.
+  const recentTurnTexts: string[] = [];
+  const MAX_REPEATED_TURNS = 3;
 
   for (let turn = 0; turn < maxTurns; turn++) {
     if (options.signal?.aborted) {
@@ -556,32 +560,55 @@ export async function* agentLoop(
           case 'text':
             turnText += event.text;
             fullContent += event.text;
-            // Strip <tool_call>...</tool_call> blocks from displayed text.
-            // These are parsed by extractToolCalls after the stream ends;
-            // showing raw XML to the user is noisy and confusing.
-            // We accumulate the full text (including tool_call blocks) in
-            // turnText for parsing, but only yield the cleaned text to the TUI.
+            // Strip tool-call-shaped text from the display so the user
+            // doesn't see raw JSON/XML. The full text is still accumulated
+            // in turnText for extractToolCalls to parse after the stream ends.
             {
               let displayText = event.text;
-              // Buffer for handling <tool_call> blocks that span multiple chunks.
               const combined = toolCallDisplayBuffer + displayText;
+
+              // 1. Strip <tool_call>...</tool_call> XML blocks (handles
+              //    blocks that span multiple stream chunks).
+              let cleaned = combined;
               const openIdx = combined.indexOf('<tool_call>');
               if (openIdx !== -1) {
                 const closeIdx = combined.indexOf('</tool_call>', openIdx);
                 if (closeIdx !== -1) {
-                  // Complete block — strip it.
-                  const before = combined.slice(0, openIdx);
-                  const after = combined.slice(closeIdx + '</tool_call>'.length);
-                  displayText = before + after;
+                  cleaned = combined.slice(0, openIdx) + combined.slice(closeIdx + '</tool_call>'.length);
                   toolCallDisplayBuffer = '';
                 } else {
-                  // Partial block — buffer everything from <tool_call> onward.
-                  displayText = combined.slice(0, openIdx);
+                  cleaned = combined.slice(0, openIdx);
                   toolCallDisplayBuffer = combined.slice(openIdx);
                 }
               } else {
                 toolCallDisplayBuffer = '';
               }
+
+              // 2. Strip bare JSON tool-call objects like
+              //    {"tool": "web_search", "args": {...}}
+              //    {"name": "read_file", "arguments": {...}}
+              // These are emitted by models (Nemotron, etc.) that don't
+              // use XML wrapping or the native API. We use the same
+              // brace-matching logic as extractToolCalls to handle
+              // nested objects in the arguments field.
+              cleaned = cleaned.replace(
+                /\{[^{}]*"(?:tool|name)"\s*:\s*"[a-zA-Z_][a-zA-Z0-9_-]*"[\s\S]*?\}/g,
+                (match) => {
+                  // Verify this is actually a parseable JSON tool call
+                  // (not just random text that happens to match).
+                  try {
+                    const parsed = JSON.parse(match);
+                    if (parsed && (parsed.tool || parsed.name)) {
+                      return '';  // strip it
+                    }
+                  } catch {
+                    // Not valid JSON — leave it.
+                  }
+                  return match;
+                },
+              );
+
+              displayText = cleaned;
               if (displayText.trim()) {
                 yield { type: 'text', content: displayText };
               }
@@ -687,6 +714,25 @@ export async function* agentLoop(
 
     // ── Non-verifier turn: collect tool calls ──────────────────
     const textToolCalls = extractToolCalls(turnText);
+
+    // ── Repetition loop guard ──────────────────────────────────
+    // If the model generates the same text 3 turns in a row with no
+    // tool calls being parsed, it's stuck in a loop. Stop and tell
+    // the user instead of spamming forever.
+    recentTurnTexts.push(turnText.slice(0, 500));  // track first 500 chars
+    if (recentTurnTexts.length > MAX_REPEATED_TURNS) {
+      recentTurnTexts.shift();
+    }
+    if (textToolCalls.length === 0 && pendingToolCalls.length === 0 && recentTurnTexts.length >= MAX_REPEATED_TURNS) {
+      // Check if all recent texts are the same (or very similar).
+      const allSame = recentTurnTexts.every(t => t === recentTurnTexts[0]);
+      if (allSame) {
+        yield { type: 'text', content: '\n\n[Repetition detected — stopping to prevent infinite loop. The model kept generating the same output without executing tools.]' };
+        yield { type: 'error', content: 'Repetition loop detected: model generated identical output ' + MAX_REPEATED_TURNS + ' times without executing any tools.' };
+        endTurn('repetition_loop');
+        return;
+      }
+    }
     
     // Deduplicate: merge structured API calls and text-based calls,
     // removing duplicates where the same tool+args appear in both sources.

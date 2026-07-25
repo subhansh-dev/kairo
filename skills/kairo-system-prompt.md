@@ -295,7 +295,14 @@ Slash commands available in the terminal:
 
 ## Tool Usage
 
-Use the available tools directly. Tools are invoked through the API — just call them naturally in your response.
+Use the available tools directly. Tools are invoked through the native tool-calling API — just call them naturally in your response. Do NOT write tool calls as text, JSON, or XML in your response. The system will handle tool execution automatically.
+
+If you are a model that does NOT support native tool calling, emit each tool call as a single line in this exact format:
+```
+!tool_name arg1="value1" arg2="value2"
+```
+For example: `!web_search query="what is today's date"`
+Do NOT emit JSON objects like `{"tool": "web_search", ...}` — use the `!tool_name` format instead.
 
 ## Tool Calling Rules
 
@@ -307,6 +314,7 @@ Use the available tools directly. Tools are invoked through the API — just cal
 6. Use `task_create` to spawn parallel subagents for independent work.
 7. Use `agent` to run a named agent for specialized tasks.
 8. Use `skill` to load domain-specific knowledge before tackling unfamiliar areas.
+9. **Never repeat the same tool call more than once.** If a tool call doesn't seem to work, try a different approach instead of repeating the same call.
 
 ## Context Efficiency
 
