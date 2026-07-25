@@ -34,6 +34,15 @@ from kairo.agent.graph import (
 )
 from kairo.agent.learning import LearningEntry, LearningGraph
 from kairo.agent.memory import SessionStore, analyze_run
+from kairo.agent.memory_types import (
+    AgentMemory,
+    EpisodicEvent,
+    EpisodicMemory,
+    ProceduralMemory,
+    ProceduralSkill,
+    SemanticFact,
+    SemanticMemory,
+)
 from kairo.agent.patterns import (
     PlanAndExecuteResult,
     ReActResult,
@@ -90,4 +99,8 @@ __all__ = [
     "A2AServer", "A2AClient", "A2AMessage", "AgentCard",
     # code sandbox
     "CodeSandbox", "SandboxResult",
+    # memory types
+    "AgentMemory", "EpisodicMemory", "EpisodicEvent",
+    "SemanticMemory", "SemanticFact",
+    "ProceduralMemory", "ProceduralSkill",
 ]
