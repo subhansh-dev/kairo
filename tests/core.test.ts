@@ -853,3 +853,64 @@ describe('Credential Pool', () => {
     // File permissions are now 0600 — verified by code review
   });
 });
+
+// ── extractToolCalls — XML <tool_call> parsing ──────────────
+
+describe('extractToolCalls — XML blocks', () => {
+  it('parses <tool_call>{json}</tool_call> blocks', async () => {
+    const { extractToolCalls } = await import('../src/tools/types.js');
+    const text = `<tool_call>
+{"name": "web_search", "arguments": {"query": "today's date"}}
+</tool_call>`;
+    const calls = extractToolCalls(text);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe('web_search');
+    expect(calls[0].args).toContain("today's date");
+  });
+
+  it('parses multiple XML blocks', async () => {
+    const { extractToolCalls } = await import('../src/tools/types.js');
+    const text = `<tool_call>
+{"name": "web_search", "arguments": {"query": "date"}}
+</tool_call>
+and then
+<tool_call>
+{"name": "read_file", "arguments": {"path": "result.txt"}}
+</tool_call>`;
+    const calls = extractToolCalls(text);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].name).toBe('web_search');
+    expect(calls[1].name).toBe('read_file');
+  });
+
+  it('parses single-quoted Python literals', async () => {
+    const { extractToolCalls } = await import('../src/tools/types.js');
+    const text = `<tool_call>
+{'name': 'web_search', 'arguments': {'query': 'test'}}
+</tool_call>`;
+    const calls = extractToolCalls(text);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe('web_search');
+  });
+
+  it('parses bare JSON objects', async () => {
+    const { extractToolCalls } = await import('../src/tools/types.js');
+    const text = `Call this: {"name": "read_file", "arguments": {"path": "foo.txt"}}`;
+    const calls = extractToolCalls(text);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe('read_file');
+  });
+
+  it('returns empty for plain text', async () => {
+    const { extractToolCalls } = await import('../src/tools/types.js');
+    const calls = extractToolCalls('Just a regular response.');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('still parses !tool_name syntax', async () => {
+    const { extractToolCalls } = await import('../src/tools/types.js');
+    const calls = extractToolCalls('!web_search query="test"');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe('web_search');
+  });
+});

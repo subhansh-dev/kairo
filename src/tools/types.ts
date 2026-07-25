@@ -100,9 +100,82 @@ export interface ExtractedToolCall {
  * Line-based: each line starting with `!tool_name` starts a new call.
  * Subsequent non-! lines are appended as args (multi-line content for write).
  * Also extracts from ```code blocks (```bash → exec, ``` containing !tool → tool calls).
+ * Also extracts <tool_call>{json}</tool_call> XML blocks (Hermes/Nemotron dialect).
  */
 export function extractToolCalls(text: string): ExtractedToolCall[] {
   const calls: ExtractedToolCall[] = [];
+
+  // ── Pass 0: extract <tool_call>{json}</tool_call> XML blocks ──
+  // This handles models (Nemotron, Hermes, etc.) that emit tool calls as
+  // XML tags containing JSON. We parse the JSON and convert to the same
+  // ExtractedToolCall format as the line-based parser.
+  const xmlToolCallRegex = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
+  let xmlMatch: RegExpExecArray | null;
+  while ((xmlMatch = xmlToolCallRegex.exec(text)) !== null) {
+    const jsonStr = xmlMatch[1].trim();
+    try {
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && typeof parsed.name === 'string') {
+        let argsStr: string;
+        if (parsed.arguments && typeof parsed.arguments === 'object') {
+          argsStr = JSON.stringify(parsed.arguments);
+        } else if (parsed.arguments && typeof parsed.arguments === 'string') {
+          argsStr = parsed.arguments;
+        } else if (parsed.args && typeof parsed.args === 'object') {
+          argsStr = JSON.stringify(parsed.args);
+        } else if (parsed.args && typeof parsed.args === 'string') {
+          argsStr = parsed.args;
+        } else {
+          argsStr = '{}';
+        }
+        calls.push({
+          name: parsed.name.toLowerCase(),
+          args: argsStr,
+          raw: jsonStr,
+        });
+      }
+    } catch {
+      // JSON parse failed — try Python-literal eval fallback (single quotes).
+      try {
+        const repaired = jsonStr.replace(/'/g, '"');
+        const parsed = JSON.parse(repaired);
+        if (parsed && typeof parsed.name === 'string') {
+          let argsStr: string;
+          if (parsed.arguments && typeof parsed.arguments === 'object') {
+            argsStr = JSON.stringify(parsed.arguments);
+          } else if (parsed.arguments && typeof parsed.arguments === 'string') {
+            argsStr = parsed.arguments;
+          } else {
+            argsStr = '{}';
+          }
+          calls.push({
+            name: parsed.name.toLowerCase(),
+            args: argsStr,
+            raw: jsonStr,
+          });
+        }
+      } catch {
+        // Still failed — skip this block.
+      }
+    }
+  }
+
+  // Also handle bare JSON objects with "name" and "arguments" fields
+  // (some models emit them without XML wrapping).
+  if (calls.length === 0) {
+    const bareJsonRegex = /\{"name"\s*:\s*"([a-zA-Z_][a-zA-Z0-9_-]*)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\}/g;
+    let bareMatch: RegExpExecArray | null;
+    while ((bareMatch = bareJsonRegex.exec(text)) !== null) {
+      const toolName = bareMatch[1].toLowerCase();
+      const argsJson = bareMatch[2];
+      calls.push({
+        name: toolName,
+        args: argsJson,
+        raw: bareMatch[0],
+      });
+    }
+  }
+
   const lines = text.split('\n');
 
   // First pass: strip code blocks and collect all lines as flat text

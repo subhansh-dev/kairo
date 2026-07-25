@@ -346,19 +346,32 @@ export class TUIEngine {
   private renderFull(lines: readonly string[]): void {
     this.stdout.write(CURSOR_HOME);
     this.stdout.write(ERASE_DISPLAY);
-    for (let i = 0; i < Math.min(lines.length, this.height - 1); i++) {
-      this.stdout.write(lines[i] + '\r\n');
+    // Auto-scroll: show the LAST N lines that fit on screen, not the first N.
+    // This ensures the user always sees the newest output when the
+    // conversation exceeds the terminal height.
+    const visibleCount = Math.min(lines.length, this.height - 1);
+    const startIdx = Math.max(0, lines.length - visibleCount);
+    for (let i = 0; i < visibleCount; i++) {
+      this.stdout.write(lines[startIdx + i] + '\r\n');
     }
   }
 
   private renderDiff(oldLines: readonly string[], newLines: readonly string[]): void {
-    const maxLen = Math.max(oldLines.length, newLines.length);
+    // Both oldLines and newLines are the FULL line arrays. We need to
+    // compute the visible window (tail) for both, then diff within that
+    // window. This ensures scrolling works: when new lines push old lines
+    // off-screen, the diff correctly re-renders the shifted content.
+    const visibleCount = Math.min(newLines.length, this.height - 1);
+    const newStart = Math.max(0, newLines.length - visibleCount);
+    const oldVisibleCount = Math.min(oldLines.length, this.height - 1);
+    const oldStart = Math.max(0, oldLines.length - oldVisibleCount);
+
     let firstDiff = -1;
     let lastDiff = -1;
 
-    for (let i = 0; i < maxLen; i++) {
-      const oldL = oldLines[i] || '';
-      const newL = newLines[i] || '';
+    for (let i = 0; i < visibleCount; i++) {
+      const oldL = oldLines[oldStart + i] || '';
+      const newL = newLines[newStart + i] || '';
       if (oldL !== newL) {
         if (firstDiff === -1) firstDiff = i;
         lastDiff = i;
@@ -367,17 +380,16 @@ export class TUIEngine {
 
     if (firstDiff === -1) return; // No changes
 
-    // Only redraw changed lines within a range
+    // Only redraw changed lines within the visible window.
     for (let i = firstDiff; i <= lastDiff; i++) {
-      if (i < this.height) {
-        const newL = newLines[i] || '';
-        this.stdout.write(`\x1b[${i + 1};1H`);
-        this.stdout.write(ERASE_LINE);
-        this.stdout.write(newL);
-      }
+      const newL = newLines[newStart + i] || '';
+      this.stdout.write(`\x1b[${i + 1};1H`);
+      this.stdout.write(ERASE_LINE);
+      this.stdout.write(newL);
     }
 
-    const promptLine = Math.min(newLines.length, this.height - 1);
+    // Position cursor at the end of visible content.
+    const promptLine = Math.min(visibleCount, this.height - 1);
     this.stdout.write(`\x1b[${promptLine + 1};1H`);
   }
 }

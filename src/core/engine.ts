@@ -510,6 +510,7 @@ export async function* agentLoop(
     // For verifier: inject verifier instruction, stream, then parse verdict
     // For thinker/worker: inject role instruction + stream normally
     let turnText = '';
+    let toolCallDisplayBuffer = '';  // buffers <tool_call> blocks across stream chunks
     const pendingToolCalls: ToolCall[] = [];
 
     const streamOptions: StreamOptions = {
@@ -555,7 +556,36 @@ export async function* agentLoop(
           case 'text':
             turnText += event.text;
             fullContent += event.text;
-            yield { type: 'text', content: event.text };
+            // Strip <tool_call>...</tool_call> blocks from displayed text.
+            // These are parsed by extractToolCalls after the stream ends;
+            // showing raw XML to the user is noisy and confusing.
+            // We accumulate the full text (including tool_call blocks) in
+            // turnText for parsing, but only yield the cleaned text to the TUI.
+            {
+              let displayText = event.text;
+              // Buffer for handling <tool_call> blocks that span multiple chunks.
+              const combined = toolCallDisplayBuffer + displayText;
+              const openIdx = combined.indexOf('<tool_call>');
+              if (openIdx !== -1) {
+                const closeIdx = combined.indexOf('</tool_call>', openIdx);
+                if (closeIdx !== -1) {
+                  // Complete block — strip it.
+                  const before = combined.slice(0, openIdx);
+                  const after = combined.slice(closeIdx + '</tool_call>'.length);
+                  displayText = before + after;
+                  toolCallDisplayBuffer = '';
+                } else {
+                  // Partial block — buffer everything from <tool_call> onward.
+                  displayText = combined.slice(0, openIdx);
+                  toolCallDisplayBuffer = combined.slice(openIdx);
+                }
+              } else {
+                toolCallDisplayBuffer = '';
+              }
+              if (displayText.trim()) {
+                yield { type: 'text', content: displayText };
+              }
+            }
             break;
 
           case 'thinking_delta':
@@ -597,6 +627,7 @@ export async function* agentLoop(
               return;
             }
             turnText = '';
+            toolCallDisplayBuffer = '';  // reset buffer for the retry
             break;
 
           case 'done':
