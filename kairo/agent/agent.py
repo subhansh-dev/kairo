@@ -83,6 +83,9 @@ class Agent:
         # Build subsystems.
         bundle_cfg = ToolBundleConfig(workspace=agent_cfg.workspace)
         self.registry, self.guard, self.todo_store = build_default_registry(bundle_cfg)
+        # Register introspection tools backed by a closure over self.
+        from kairo.tools.introspection import register_introspection_tools
+        register_introspection_tools(self.registry, self._introspection_state)
         self.dispatcher = ToolDispatcher(self.registry, self.guard)
         self.catalog = default_catalog()
         self.orchestrator = Orchestrator(kairo_cfg, self.catalog)
@@ -247,6 +250,27 @@ class Agent:
     def cancel(self) -> None:
         """Request cancellation — the loop checks this between turns."""
         self._cancelled = True
+
+    def _introspection_state(self) -> dict:
+        """Snapshot of agent state for the introspection tools."""
+        tools_available = [
+            {"name": s.name, "description": s.description}
+            for s in self.registry.specs()
+        ]
+        return {
+            "turns_used": len(self.turns),
+            "max_turns": self.budget.max_turns or self.kcfg.safety.max_turns,
+            "tokens_used": self._total_tokens,
+            "max_tokens": self.budget.max_tokens,
+            "cost_usd": self._total_cost,
+            "max_cost_usd": self.budget.max_cost_usd,
+            "tools_available": tools_available,
+            "message_count": len(self.messages),
+            "messages": [m.to_dict() for m in self.messages],
+            "phase": self.turns[-1].provider if self.turns else None,
+            "model": self.turns[-1].model if self.turns else None,
+            "provider": self.turns[-1].provider if self.turns else None,
+        }
 
     # -- per-turn internals --------------------------------------------
 
