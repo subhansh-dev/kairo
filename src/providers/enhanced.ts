@@ -87,6 +87,16 @@ export class EnhancedProvider implements Provider {
     let buffer = '';
     let chunkCount = 0;
 
+    // Accumulate structured tool calls from the API. The OpenAI SSE format
+    // sends tool calls as deltas across multiple chunks:
+    //   1. tool_call_start with id + name
+    //   2. tool_call_delta with argument fragments
+    //   3. (no explicit end — the stream just ends)
+    // We accumulate the fragments and emit a tool_call_end when the stream
+    // finishes or when a new tool_call_start comes in for a different id.
+    const toolCallAccumulators = new Map<string, { id: string; name: string; argsBuffer: string }>();
+    let lastToolCallId: string | null = null;
+
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -128,7 +138,33 @@ export class EnhancedProvider implements Provider {
         if (completePortion.trim()) {
           const events = dialectDef.parseStreamChunk(completePortion);
           for (const event of events) {
-            yield event;
+            // Intercept tool_call events to accumulate them.
+            if (event.type === 'tool_call_start') {
+              // If we were accumulating a different tool call, flush it.
+              if (lastToolCallId && lastToolCallId !== event.id) {
+                const acc = toolCallAccumulators.get(lastToolCallId);
+                if (acc) {
+                  let parsedArgs: Record<string, unknown> = {};
+                  try {
+                    parsedArgs = JSON.parse(acc.argsBuffer || '{}');
+                  } catch {
+                    parsedArgs = { _raw: acc.argsBuffer };
+                  }
+                  yield { type: 'tool_call_end', id: acc.id, name: acc.name, arguments: parsedArgs };
+                }
+              }
+              lastToolCallId = event.id;
+              toolCallAccumulators.set(event.id, { id: event.id, name: event.name, argsBuffer: '' });
+              // Don't yield tool_call_start to the engine — we'll yield tool_call_end instead.
+            } else if (event.type === 'tool_call_delta') {
+              const acc = toolCallAccumulators.get(event.id);
+              if (acc) {
+                acc.argsBuffer += event.delta;
+              }
+              // Don't yield tool_call_delta to the engine.
+            } else {
+              yield event;
+            }
           }
         }
       }
@@ -137,8 +173,41 @@ export class EnhancedProvider implements Provider {
       if (buffer.trim()) {
         const events = dialectDef.parseStreamChunk(buffer);
         for (const event of events) {
-          yield event;
+          if (event.type === 'tool_call_start') {
+            if (lastToolCallId && lastToolCallId !== event.id) {
+              const acc = toolCallAccumulators.get(lastToolCallId);
+              if (acc) {
+                let parsedArgs: Record<string, unknown> = {};
+                try {
+                  parsedArgs = JSON.parse(acc.argsBuffer || '{}');
+                } catch {
+                  parsedArgs = { _raw: acc.argsBuffer };
+                }
+                yield { type: 'tool_call_end', id: acc.id, name: acc.name, arguments: parsedArgs };
+              }
+            }
+            lastToolCallId = event.id;
+            toolCallAccumulators.set(event.id, { id: event.id, name: event.name, argsBuffer: '' });
+          } else if (event.type === 'tool_call_delta') {
+            const acc = toolCallAccumulators.get(event.id);
+            if (acc) {
+              acc.argsBuffer += event.delta;
+            }
+          } else {
+            yield event;
+          }
         }
+      }
+
+      // Flush any remaining accumulated tool calls.
+      for (const [id, acc] of toolCallAccumulators) {
+        let parsedArgs: Record<string, unknown> = {};
+        try {
+          parsedArgs = JSON.parse(acc.argsBuffer || '{}');
+        } catch {
+          parsedArgs = { _raw: acc.argsBuffer };
+        }
+        yield { type: 'tool_call_end', id: acc.id, name: acc.name, arguments: parsedArgs };
       }
     } finally {
       reader.releaseLock();

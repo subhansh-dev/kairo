@@ -281,19 +281,46 @@ function formatToolCallArgs(call: ToolCall): string {
   if (!args) return '';
   if (typeof args === 'string') return args;
 
-  if (call.name === 'exec') {
-    return (args as any).command || (args as any).cmd || JSON.stringify(args);
+  // args is a Record<string, unknown> from the API.
+  // Convert to the flat string format the tools expect using flattenArgs.
+  try {
+    // Import dynamically to avoid circular deps.
+    const argsStr = JSON.stringify(args);
+    // Use the same flattenArgs logic that execute() uses.
+    // For now, do a simple conversion here:
+    if (call.name === 'exec' || call.name === 'bash') {
+      return String((args as any).command || (args as any).cmd || argsStr);
+    }
+    if (call.name === 'write' || call.name === 'file_write') {
+      const path = String((args as any).path || '');
+      const content = String((args as any).content || '');
+      return `${path}\n${content}`;
+    }
+    if (call.name === 'read' || call.name === 'file_read') {
+      return String((args as any).path || argsStr);
+    }
+    if (call.name === 'edit' || call.name === 'file_edit') {
+      const path = String((args as any).path || '');
+      const oldStr = String((args as any).old_string || (args as any).old || (args as any).find || '');
+      const newStr = String((args as any).new_string || (args as any).new || (args as any).replace || '');
+      return `${path}\n${oldStr}\n${newStr}`;
+    }
+    if (call.name === 'web_fetch') {
+      const url = String((args as any).url || '');
+      const prompt = String((args as any).prompt || '');
+      return prompt ? `${url} ${prompt}` : url;
+    }
+    // For tools that take a single primary arg, extract it.
+    const primaryFields = ['query', 'path', 'command', 'content', 'url', 'name', 'prompt', 'text', 'pattern', 'input'];
+    for (const field of primaryFields) {
+      if ((args as any)[field] !== undefined) {
+        return String((args as any)[field]);
+      }
+    }
+    return argsStr;
+  } catch {
+    return JSON.stringify(args);
   }
-  if (call.name === 'write') {
-    const path = (args as any).path || '';
-    const content = (args as any).content || '';
-    return `${path}\n${content}`;
-  }
-  if (call.name === 'read') {
-    return (args as any).path || JSON.stringify(args);
-  }
-
-  return JSON.stringify(args);
 }
 
 // ─── Agent Loop ─────────────────────────────────────────────────
@@ -517,9 +544,26 @@ export async function* agentLoop(
     let toolCallDisplayBuffer = '';  // buffers <tool_call> blocks across stream chunks
     const pendingToolCalls: ToolCall[] = [];
 
+    // Build tool definitions for the API. Convert Kairo's ToolDefinition
+    // format to the provider's Tool format so the model can use native
+    // tool calling instead of emitting text-based tool calls.
+    const apiTools = toolRegistry.getAll().map(t => ({
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters || {
+        type: 'object',
+        properties: {},
+        description: t.prompt || t.description,
+      },
+      tier: t.tier,
+      concurrencySafe: t.concurrencySafe,
+    }));
+
     const streamOptions: StreamOptions = {
       signal: options.signal,
       reasoning: thinkingEffort ?? (route.thinking ? 'high' as Effort : undefined),
+      tools: apiTools,
+      toolChoice: 'auto' as const,
     };
 
     // Build messages for this turn — inject role instruction + verifier feedback
@@ -771,7 +815,22 @@ export async function* agentLoop(
       continue;
     }
 
-    messages.push({ role: 'assistant', content: turnText });
+    // Push the assistant message WITH tool_calls so the API knows what
+    // tool calls were made. This is required for OpenAI-compatible APIs —
+    // the assistant message must include the tool_calls array, and each
+    // tool result message must reference the corresponding tool_call_id.
+    const assistantMsg: any = { role: 'assistant', content: turnText };
+    if (pendingToolCalls.length > 0) {
+      assistantMsg.tool_calls = pendingToolCalls.map(tc => ({
+        id: tc.id,
+        type: 'function',
+        function: {
+          name: tc.name,
+          arguments: JSON.stringify(tc.arguments),
+        },
+      }));
+    }
+    messages.push(assistantMsg);
     // Use a structured Map for tool results instead of string concatenation + regex
     const toolResultMap = new Map<string, string>();
 

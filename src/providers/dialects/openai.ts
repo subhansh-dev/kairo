@@ -94,6 +94,10 @@ export const openaiDialect: DialectDefinition = {
         if (m.role === 'tool' && (m as any).tool_call_id) {
           msg.tool_call_id = (m as any).tool_call_id;
         }
+        // Include tool_calls for assistant messages that requested tools
+        if (m.role === 'assistant' && (m as any).tool_calls) {
+          msg.tool_calls = (m as any).tool_calls;
+        }
         return msg;
       }),
       stream: true,
