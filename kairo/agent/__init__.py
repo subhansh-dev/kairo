@@ -117,3 +117,14 @@ __all__ = [
     # skills
     "Skill", "SkillLoader", "load_skill",
 ]
+
+
+# Late import to avoid circular dependency (checkpoint.py imports Agent).
+def __getattr__(name: str):
+    if name == "CheckpointedAgent":
+        from kairo.agent.checkpoint import CheckpointedAgent
+        return CheckpointedAgent
+    if name == "Checkpoint":
+        from kairo.agent.checkpoint import Checkpoint
+        return Checkpoint
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

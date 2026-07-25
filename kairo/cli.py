@@ -306,6 +306,81 @@ def learning(workdir: str | None) -> None:
     click.echo(json.dumps(stats, indent=2, default=str))
 
 
+@cli.command()
+@click.option("--host", default="127.0.0.1", help="Bind host.")
+@click.option("--dashboard-port", type=int, default=8080,
+              help="Dashboard port.")
+@click.option("--metrics-port", type=int, default=9090,
+              help="Prometheus metrics port.")
+@click.option("--otlp-endpoint", type=str, default=None,
+              help="Optional OTLP collector endpoint (e.g. http://localhost:4317).")
+@click.option("--webhook-url", type=str, default=None,
+              help="Optional webhook URL to forward events to.")
+@click.option("--config", "config_path", type=click.Path(), default=None)
+def serve(host: str, dashboard_port: int, metrics_port: int,
+          otlp_endpoint: str | None, webhook_url: str | None,
+          config_path: str | None) -> None:
+    """Start all Kairo servers: dashboard, metrics, OTLP exporter, webhooks.
+
+    Useful for production deployments and long-running sessions.
+    Press Ctrl+C to stop.
+    """
+    from pathlib import Path
+    from kairo.config import load_config
+    from kairo.observability import (
+        DashboardServer, MetricsCollector, MetricsServer,
+        OTLPConfig, OTLPExporter,
+    )
+    from kairo.observability.webhooks import WebhookDispatcher, WebhookSubscription
+
+    cfg = load_config(config_path)
+    servers: list = []
+    exporters: list = []
+    webhook_dispatcher: WebhookDispatcher | None = None
+
+    # Dashboard
+    dashboard = DashboardServer(workdir=cfg.workdir, host=host, port=dashboard_port)
+    dashboard_url = dashboard.start()
+    servers.append(dashboard)
+    click.echo(f"Dashboard: {dashboard_url}")
+
+    # Metrics
+    collector = MetricsCollector.default()
+    metrics_server = MetricsServer(collector, host=host, port=metrics_port)
+    metrics_url = metrics_server.start()
+    servers.append(metrics_server)
+    click.echo(f"Metrics:   {metrics_url}/metrics")
+
+    # OTLP exporter (optional)
+    if otlp_endpoint:
+        otlp = OTLPExporter(OTLPConfig(endpoint=otlp_endpoint))
+        otlp.start()
+        exporters.append(otlp)
+        click.echo(f"OTLP:      {otlp_endpoint}")
+
+    # Webhook (optional)
+    if webhook_url:
+        webhook_dispatcher = WebhookDispatcher()
+        webhook_dispatcher.add(WebhookSubscription(url=webhook_url))
+        webhook_dispatcher.start()
+        click.echo(f"Webhook:   {webhook_url}")
+
+    click.echo("\nPress Ctrl+C to stop all servers.")
+    try:
+        import time
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        click.echo("\nStopping servers...")
+    finally:
+        for s in servers:
+            s.stop()
+        for e in exporters:
+            e.stop()
+        if webhook_dispatcher:
+            webhook_dispatcher.stop()
+
+
 def main() -> None:
     cli()
 
