@@ -29,6 +29,7 @@ Capabilities:
 
 from kairo._version import __version__
 from kairo.config import KairoConfig, load_config
+from kairo.rag import KeywordOverlapEmbeddings, RagRetriever, VectorStore
 from kairo.types import (
     Message,
     Role,
@@ -48,4 +49,8 @@ __all__ = [
     "ToolResult",
     "ProviderName",
     "ProviderResponse",
+    # RAG
+    "KeywordOverlapEmbeddings",
+    "VectorStore",
+    "RagRetriever",
 ]
