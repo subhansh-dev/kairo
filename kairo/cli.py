@@ -400,6 +400,37 @@ def serve(host: str, dashboard_port: int, metrics_port: int,
             webhook_dispatcher.stop()
 
 
+@cli.command()
+@click.option("--host", default="0.0.0.0", help="Bind host.")
+@click.option("--port", "-p", type=int, default=8000, help="API server port.")
+@click.option("--config", "config_path", type=click.Path(), default=None)
+def api(host: str, port: int, config_path: str | None) -> None:
+    """Start the Kairo REST API server.
+
+    Exposes endpoints for starting agent runs, listing runs, managing
+    tenants, and scraping Prometheus metrics. See kairo.api.APIServer
+    for the full API spec.
+    """
+    from kairo.api import APIServer
+    from kairo.config import load_config
+    cfg = load_config(config_path)
+    server = APIServer(workdir=cfg.workdir, kairo_cfg=cfg, host=host, port=port)
+    url = server.start()
+    click.echo(f"Kairo API server running at {url}")
+    click.echo(f"  Health:  {url}/health")
+    click.echo(f"  Metrics: {url}/metrics")
+    click.echo(f"  Models:  {url}/api/models")
+    click.echo(f"  Presets: {url}/api/presets")
+    click.echo("\nPress Ctrl+C to stop.")
+    try:
+        import time
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        click.echo("\nStopping...")
+        server.stop()
+
+
 def main() -> None:
     cli()
 

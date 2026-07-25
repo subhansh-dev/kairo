@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kairo"
-version = "0.2.0"
+version = "0.4.0"
 description = "Kairo — a multi-model, multi-provider coding agent with routing, orchestration, MCP bridging, sub-agent coordination, reflexion, and a self-improvement loop. Built for free local models."
 readme = "README.md"
 requires-python = ">=3.10"
