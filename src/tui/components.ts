@@ -237,6 +237,45 @@ export class ChatComponent implements Component {
     return lines;
   }
 
+  /**
+   * Word-wrap text to fit within a given width.
+   * Preserves existing newlines and wraps long lines.
+   * Strips ANSI escape codes when measuring width.
+   */
+  private wrapText(text: string, maxWidth: number): string[] {
+    if (maxWidth <= 0) return [text];
+    const result: string[] = [];
+    for (const para of text.split('\n')) {
+      if (para.length === 0) {
+        result.push('');
+        continue;
+      }
+      // Strip ANSI for measuring, but keep original for display.
+      const stripped = para.replace(/\x1b\[[0-9;]*m/g, '');
+      if (stripped.length <= maxWidth) {
+        result.push(para);
+        continue;
+      }
+      // Word-wrap: split on spaces, accumulate until we hit maxWidth.
+      const words = para.split(/(\s+)/);  // keep separators
+      let current = '';
+      let currentLen = 0;
+      for (const word of words) {
+        const wordLen = word.replace(/\x1b\[[0-9;]*m/g, '').length;
+        if (currentLen + wordLen > maxWidth && current.length > 0) {
+          result.push(current);
+          current = word;
+          currentLen = wordLen;
+        } else {
+          current += word;
+          currentLen += wordLen;
+        }
+      }
+      if (current.length > 0) result.push(current);
+    }
+    return result;
+  }
+
   render(width: number): string[] {
     const R = '\x1b[0m', B = '\x1b[1m', D = '\x1b[2m';
     const c = {
@@ -253,6 +292,7 @@ export class ChatComponent implements Component {
     const lines: string[] = [];
 
     const now = this.messages.length > 2 ? `${this.messages.length} msgs` : '';
+    const innerWidth = width - 6;  // 3 chars left indent + 3 chars right padding
 
     for (let i = 0; i < this.messages.length; i++) {
       const msg = this.messages[i];
@@ -261,9 +301,8 @@ export class ChatComponent implements Component {
 
       if (msg.role === 'user') {
         lines.push(`  ${B}${c.primary}You${R}${now ? ` ${D}${c.muted}${now}${R}` : ''}`);
-        for (const line of content.split('\n')) {
-          const visibleL = line.replace(/\x1b\[[0-9;]*m/g, '').length;
-          lines.push(`  ${' '.repeat(3)}${line}${' '.repeat(Math.max(0, width - visibleL - 5))}`);
+        for (const line of this.wrapText(content, innerWidth)) {
+          lines.push(`     ${line}`);
         }
         if (i < this.messages.length - 1) lines.push('');
       } else if (msg.role === 'assistant') {
@@ -279,9 +318,8 @@ export class ChatComponent implements Component {
             const code = match[2].trimEnd();
             lines.push(...this.formatCodeBlock(code, lang, width));
           } else {
-            for (const line of part.split('\n')) {
-              const visibleL = line.replace(/\x1b\[[0-9;]*m/g, '').length;
-              lines.push(`  ${' '.repeat(3)}${line}${' '.repeat(Math.max(0, width - visibleL - 5))}`);
+            for (const line of this.wrapText(part, innerWidth)) {
+              lines.push(`     ${line}`);
             }
           }
         }
@@ -292,31 +330,41 @@ export class ChatComponent implements Component {
 
     for (const tool of this.toolCalls) {
       const statusIcon = tool.status === 'running' ? `${c.warning}●${R}` : tool.status === 'success' ? `${c.success}✓${R}` : `${c.error}✗${R}`;
-      const sep = `${c.muted}┊${R}`;
       const timing = tool.durationMs ? ` ${D}${c.muted}(${tool.durationMs < 1000 ? Math.round(tool.durationMs) + 'ms' : (tool.durationMs / 1000).toFixed(1) + 's'})${R}` : '';
-      // Flatten JSON args for display so the user sees the actual query/command
-      // instead of raw JSON like {"query":"now"}.
-      let argsPreview = tool.args?.slice(0, 60) || '';
+      // Clean up args for display — flatten JSON to key=value format.
+      let argsPreview = tool.args?.slice(0, 80) || '';
       if (argsPreview.trim().startsWith('{')) {
         try {
-          // Simple extraction: try to pull out the first string value.
-          const match = argsPreview.match(/"([^"]+)"\s*:\s*"([^"]+)"/);
-          if (match) {
-            argsPreview = `${match[1]}="${match[2]}"`;
+          const parsed = JSON.parse(argsPreview);
+          const parts: string[] = [];
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof v === 'string' && v.length > 0) {
+              parts.push(`${k}="${v.slice(0, 40)}"`);
+            }
           }
+          if (parts.length > 0) argsPreview = parts.join(' ');
         } catch {
-          // Keep raw on parse failure.
+          // Try simple regex extraction
+          const match = argsPreview.match(/"([^"]+)"\s*:\s*"([^"]+)"/);
+          if (match) argsPreview = `${match[1]}="${match[2]}"`;
         }
       }
-      lines.push(`  ${statusIcon} ${sep} ${B}${c.accent}${tool.name}${R}${timing} ${D}${argsPreview}${R}`);
-      if (tool.result && tool.status === 'success') {
-        // Show more of the result — 200 chars instead of 80.
-        const preview = tool.result.slice(0, 200).replace(/\n/g, ' ');
-        lines.push(`    ${sep} ${D}${preview}${R}`);
-      }
-      if (tool.result && tool.status === 'error') {
-        const preview = tool.result.slice(0, 200).replace(/\n/g, ' ');
-        lines.push(`    ${sep} ${c.error}${preview}${R}`);
+      // Truncate args if still too long
+      if (argsPreview.length > 60) argsPreview = argsPreview.slice(0, 57) + '...';
+      lines.push(`  ${statusIcon} ${B}${c.accent}${tool.name}${R}${timing} ${D}${c.muted}${argsPreview}${R}`);
+      // Show tool result preview — wrap to terminal width
+      if (tool.result && (tool.status === 'success' || tool.status === 'error')) {
+        const maxPreview = 300;
+        const preview = tool.result.slice(0, maxPreview).replace(/\n/g, ' ');
+        const color = tool.status === 'success' ? c.muted : c.error;
+        // Wrap the preview to fit
+        const wrapped = this.wrapText(preview, innerWidth);
+        for (const w of wrapped.slice(0, 3)) {  // max 3 lines of preview
+          lines.push(`     ${D}${color}${w}${R}`);
+        }
+        if (tool.result.length > maxPreview) {
+          lines.push(`     ${D}${c.muted}...(${tool.result.length - maxPreview} more chars)${R}`);
+        }
       }
     }
 
