@@ -22,6 +22,12 @@ Usage:
 - ls — list current directory
 - ls <path> — list specified directory
 - ls -a — show hidden files (dotfiles)`,
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Directory path to list (default: current dir)' },
+    },
+  },
   tier: 'read',
   concurrencySafe: true,
   readOnly: true,

@@ -22,6 +22,15 @@ Rules:
   old_string
   new_string
 - Use read first to get the exact content you want to replace`,
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'File path to edit' },
+      old_string: { type: 'string', description: 'Exact text to find (must match uniquely)' },
+      new_string: { type: 'string', description: 'Text to replace it with' },
+    },
+    required: ['path', 'old_string', 'new_string'],
+  },
   tier: 'write',
   concurrencySafe: false,
   readOnly: false,

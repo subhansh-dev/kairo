@@ -11,7 +11,7 @@ import { checkSsrf } from '../engine/ssrf.js';
 
 export const webFetchTool: ToolDefinition = {
   name: 'web_fetch',
-  description: 'Fetch a URL and convert to markdown. Usage: web_fetch <url> [prompt]',
+  description: 'Fetch a URL and convert to markdown. Returns the page content.',
   prompt: `Fetches a URL, converts the page to markdown, and optionally extracts relevant content.
 
 Usage:
@@ -19,6 +19,20 @@ Usage:
 - web_fetch <url> <prompt> — fetch and extract relevant content based on prompt
 
 HTTP is upgraded to HTTPS. Cross-host redirects are returned.`,
+  parameters: {
+    type: 'object',
+    properties: {
+      url: {
+        type: 'string',
+        description: 'The URL to fetch (http:// or https://)',
+      },
+      prompt: {
+        type: 'string',
+        description: 'Optional: extract only content relevant to this prompt',
+      },
+    },
+    required: ['url'],
+  },
   tier: 'read',
   concurrencySafe: true,
   readOnly: true,
@@ -166,13 +180,23 @@ function htmlToMarkdown(html: string): string {
 
 export const webSearchTool: ToolDefinition = {
   name: 'web_search',
-  description: 'Search the web. Usage: web_search <query>',
+  description: 'Search the web for real-time information. Returns titles, URLs, and descriptions.',
   prompt: `Search the web using available search providers. Returns result blocks with titles and URLs.
 
 Usage:
 - web_search <query> — search for the query
 
 Uses DuckDuckGo by default (no API key needed).`,
+  parameters: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'The search query string',
+      },
+    },
+    required: ['query'],
+  },
   tier: 'read',
   concurrencySafe: true,
   readOnly: true,

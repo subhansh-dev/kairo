@@ -78,6 +78,14 @@ Usage:
 - grep <pattern> <path> <glob> — search with file filter (e.g., "*.ts")
 
 Pattern is treated as a case-insensitive regex.`,
+  parameters: {
+    type: 'object',
+    properties: {
+      pattern: { type: 'string', description: 'Regex pattern to search for' },
+      path: { type: 'string', description: 'File or directory to search in' },
+    },
+    required: ['pattern'],
+  },
   tier: 'read',
   concurrencySafe: true,
   readOnly: true,

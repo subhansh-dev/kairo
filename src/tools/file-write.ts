@@ -23,6 +23,14 @@ Hash-anchored writes verify the file hasn't changed since last read.
 If the hash doesn't match, the write is rejected with an error.
 
 The content starts after the first newline in the arguments.`,
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'File path to write' },
+      content: { type: 'string', description: 'Full content to write to the file' },
+    },
+    required: ['path', 'content'],
+  },
   tier: 'write',
   concurrencySafe: false,
   readOnly: false,

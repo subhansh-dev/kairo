@@ -365,6 +365,13 @@ Commands are safety-classified:
 
 Usage: exec <command>
 Example: exec ls -la src/`,
+  parameters: {
+    type: 'object',
+    properties: {
+      command: { type: 'string', description: 'Shell command to execute' },
+    },
+    required: ['command'],
+  },
   tier: 'exec',
   concurrencySafe: false,
   readOnly: false,

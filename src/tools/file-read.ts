@@ -42,6 +42,15 @@ Usage:
 
 The content hash is used for conflict detection when writing.
 Images (PNG, JPG) are detected and noted.`,
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'File path to read' },
+      offset: { type: 'integer', description: 'Starting line number (1-based, default 1)' },
+      limit: { type: 'integer', description: 'Max lines to read (default 2000)' },
+    },
+    required: ['path'],
+  },
   tier: 'read',
   concurrencySafe: true,
   readOnly: true,

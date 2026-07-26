@@ -39,6 +39,14 @@ Usage:
 - todo done <id> — mark task as complete
 - todo clear — clear completed tasks
 - todo reset — clear all tasks`,
+  parameters: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['add', 'list', 'done', 'clear', 'reset'], description: 'Action to perform' },
+      text: { type: 'string', description: 'Task text (for add) or task ID (for done)' },
+    },
+    required: ['action'],
+  },
   tier: 'read',
   concurrencySafe: true,
   readOnly: false,
