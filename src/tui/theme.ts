@@ -28,30 +28,32 @@ export interface Theme {
   };
 }
 
-const R = '\x1b[0m';
-const B = '\x1b[1m';
-const D = '\x1b[2m';
-const I = '\x1b[3m';
+// ANSI escape sequences for terminal colors.
+// Using 256-color codes for broad compatibility.
+const R = '\x1b[0m';     // reset all attributes
+const B = '\x1b[1m';     // bold
+const D = '\x1b[2m';     // dim
+const I = '\x1b[3m';     // italic
 
 export const theme: Theme = {
   name: 'kairo-dark',
   colors: {
-    primary: '\x1b[38;2;0;204;204m',    // cyan — kairo brand
-    secondary: '\x1b[38;2;177;185;249m',  // soft purple — like claude's permission
-    accent: '\x1b[38;2;215;119;87m',     // claude orange — tool calls
-    success: '\x1b[38;2;78;186;101m',    // green
-    warning: '\x1b[38;2;255;193;7m',     // amber
-    error: '\x1b[38;2;255;107;128m',     // soft red
-    muted: '\x1b[38;2;153;153;153m',     // gray — secondary text
-    subtle: '\x1b[38;2;80;80;80m',       // dim gray — borders
-    text: '\x1b[38;2;230;230;230m',      // near-white
-    bg: '\x1b[48;2;1;1;3m',              // pure black bg
-    surface: '\x1b[48;2;12;12;16m',       // subtle surface
-    border: '\x1b[38;2;60;60;68m',       // visible border
-    promptBorder: '\x1b[38;2;80;80;88m', // input border
-    userMessage: '\x1b[38;2;180;180;190m', // user text color
-    toolRunning: '\x1b[38;2;255;193;7m', // amber for running tools
-    link: '\x1b[38;2;0;180;255m',        // blue for links
+    primary: '\x1b[38;5;51m',     // cyan — kairo brand
+    secondary: '\x1b[38;5;141m',  // soft purple
+    accent: '\x1b[38;5;208m',     // orange — tool calls
+    success: '\x1b[38;5;108m',    // green
+    warning: '\x1b[38;5;221m',    // amber
+    error: '\x1b[38;5;174m',      // soft red
+    muted: '\x1b[38;5;245m',      // gray — secondary text
+    subtle: '\x1b[38;5;238m',     // dim gray — borders
+    text: '\x1b[38;5;252m',       // near-white
+    bg: '\x1b[48;5;0m',           // pure black bg
+    surface: '\x1b[48;5;236m',    // subtle surface
+    border: '\x1b[38;5;240m',     // visible border
+    promptBorder: '\x1b[38;5;240m', // input border
+    userMessage: '\x1b[38;5;252m',  // user text color
+    toolRunning: '\x1b[38;5;221m',  // amber for running tools
+    link: '\x1b[38;5;75m',          // blue for links
   },
   chars: {
     prompt: '\u276f',         // ❯
