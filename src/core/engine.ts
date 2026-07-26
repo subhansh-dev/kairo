@@ -550,11 +550,11 @@ export async function* agentLoop(
     const apiTools = toolRegistry.getAll().map(t => ({
       name: t.name,
       description: t.description,
-      parameters: t.parameters || {
+      parameters: (t.parameters || {
         type: 'object',
         properties: {},
         description: t.prompt || t.description,
-      },
+      }) as any,
       tier: t.tier,
       concurrencySafe: t.concurrencySafe,
     }));

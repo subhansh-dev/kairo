@@ -365,11 +365,11 @@ export async function runAgent(
     ? toolRegistry.getAll().map(t => ({
         name: t.name,
         description: t.description,
-        parameters: t.parameters || {
+        parameters: (t.parameters || {
           type: 'object' as const,
           properties: {},
           description: t.prompt || t.description,
-        },
+        }) as any,
         tier: t.tier,
         concurrencySafe: t.concurrencySafe,
       }))

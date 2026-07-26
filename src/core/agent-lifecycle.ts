@@ -32,7 +32,7 @@ export interface AgentTurn {
   toolCalls: string[];
   startTime: number;
   endTime?: number;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'repetition_loop' | 'cancelled';
 }
 
 export interface AgentSession {
@@ -121,7 +121,7 @@ export function recordTokens(inputTokens: number, outputTokens: number): void {
 /**
  * End the current turn.
  */
-export function endTurn(status: 'completed' | 'failed'): void {
+export function endTurn(status: 'completed' | 'failed' | 'repetition_loop' | 'cancelled'): void {
   if (currentTurn) {
     currentTurn.status = status;
     currentTurn.endTime = Date.now();

@@ -49,13 +49,19 @@ export const openaiDialect: DialectDefinition = {
         }
         if (delta?.tool_calls) {
           for (const tc of delta.tool_calls) {
+            // The OpenAI SSE format sends tool calls as deltas:
+            // First chunk: { index: 0, id: "call_abc", function: { name: "web_search", arguments: "" } }
+            // Subsequent: { index: 0, function: { arguments: "{\"qu" } }
+            // The `id` is ONLY in the first chunk. Subsequent chunks only have `index`.
+            // We use `index` to generate a stable ID so the accumulator can match them.
+            const stableId = tc.id || (tc.index !== undefined ? `tool_call_${tc.index}` : '');
             if (tc.function?.name) {
-              events.push({ type: 'tool_call_start', id: tc.id || '', name: tc.function.name });
+              events.push({ type: 'tool_call_start', id: stableId, name: tc.function.name });
             }
             if (tc.function?.arguments) {
               events.push({
                 type: 'tool_call_delta',
-                id: tc.id || '',
+                id: stableId,
                 name: tc.function?.name || '',
                 key: 'arguments',
                 delta: tc.function.arguments,

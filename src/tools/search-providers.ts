@@ -80,6 +80,15 @@ const duckduckgoProvider: SearchProvider = {
 }
 
 async function searchDuckDuckGo(query: string, signal?: AbortSignal): Promise<SearchHit[]> {
+  // Try the Instant Answer API first (fast but limited).
+  const apiResults = await searchDuckDuckGoApi(query, signal);
+  if (apiResults.length > 0) return apiResults;
+
+  // Fallback: scrape DuckDuckGo HTML search results.
+  return searchDuckDuckGoHtml(query, signal);
+}
+
+async function searchDuckDuckGoApi(query: string, signal?: AbortSignal): Promise<SearchHit[]> {
   try {
     const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`
     const resp = await fetch(url, {
@@ -101,9 +110,67 @@ async function searchDuckDuckGo(query: string, signal?: AbortSignal): Promise<Se
     if (data.RelatedTopics && Array.isArray(data.RelatedTopics)) {
       for (const r of data.RelatedTopics) {
         if (r.Text && r.FirstURL) results.push({ title: r.Text.split(' - ')[0] || r.Text, url: r.FirstURL, description: r.Text })
+        // Also handle nested topics
+        if (r.Topics && Array.isArray(r.Topics)) {
+          for (const t of r.Topics) {
+            if (t.Text && t.FirstURL) results.push({ title: t.Text.split(' - ')[0] || t.Text, url: t.FirstURL, description: t.Text })
+          }
+        }
       }
     }
     return results.slice(0, 10)
+  } catch {
+    return []
+  }
+}
+
+async function searchDuckDuckGoHtml(query: string, signal?: AbortSignal): Promise<SearchHit[]> {
+  try {
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: signal ?? AbortSignal.timeout(10000),
+    })
+    if (!resp.ok) return []
+    const html = await resp.text()
+    const results: SearchHit[] = []
+
+    // Parse result links from DuckDuckGo HTML.
+    // Results look like: <a class="result__a" href="...">Title</a>
+    // with <a class="result__snippet" ...>Description</a>
+    const linkRegex = /class="result__a"[^>]*href="([^"]+)"[^>]*>([^<]+)</g
+    const snippetRegex = /class="result__snippet"[^>]*>([^<]*)</g
+
+    const links: Array<{ url: string; title: string }> = []
+    let match: RegExpExecArray | null
+    while ((match = linkRegex.exec(html)) !== null) {
+      let linkUrl = match[1]
+      // DuckDuckGo wraps URLs in a redirect: //duckduckgo.com/l/?uddg=ENCODED_URL
+      const uddgMatch = linkUrl.match(/uddg=([^&]+)/)
+      if (uddgMatch) {
+        linkUrl = decodeURIComponent(uddgMatch[1])
+      }
+      links.push({ url: linkUrl, title: match[2].trim() })
+    }
+
+    const snippets: string[] = []
+    while ((match = snippetRegex.exec(html)) !== null) {
+      snippets.push(match[1].trim())
+    }
+
+    for (let i = 0; i < Math.min(links.length, 10); i++) {
+      results.push({
+        title: links[i].title,
+        url: links[i].url,
+        description: snippets[i] || '',
+      })
+    }
+
+    return results
   } catch {
     return []
   }
