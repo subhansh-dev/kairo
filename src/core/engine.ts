@@ -282,39 +282,84 @@ function formatToolCallArgs(call: ToolCall): string {
   if (typeof args === 'string') return args;
 
   // args is a Record<string, unknown> from the API.
-  // Convert to the flat string format the tools expect using flattenArgs.
+  // Convert to the flat string format the tools expect.
   try {
-    // Import dynamically to avoid circular deps.
     const argsStr = JSON.stringify(args);
-    // Use the same flattenArgs logic that execute() uses.
-    // For now, do a simple conversion here:
+    const a = args as any;
+
+    // Special-case tools that take command-style args.
+    if (call.name === 'todo') {
+      const action = String(a.action || a.command || '');
+      const text = String(a.text || a.task || a.content || '');
+      return action ? (text ? `${action} ${text}` : action) : argsStr;
+    }
+    if (call.name === 'grep') {
+      const pattern = String(a.pattern || a.query || a.regex || '');
+      const path = String(a.path || a.file || a.glob || '');
+      return path ? `${pattern} ${path}` : pattern;
+    }
+    if (call.name === 'glob') {
+      const pattern = String(a.pattern || a.glob || '');
+      const path = String(a.path || a.dir || '');
+      return path ? `${pattern} ${path}` : pattern;
+    }
+    if (call.name === 'ls') {
+      const path = String(a.path || a.dir || a.directory || '');
+      const depth = a.depth !== undefined ? `--depth ${a.depth}` : '';
+      return [path, depth].filter(Boolean).join(' ');
+    }
+    if (call.name === 'skill') {
+      const name = String(a.name || a.skill || '');
+      const query = String(a.query || a.input || '');
+      return name ? (query ? `${name} ${query}` : name) : argsStr;
+    }
+    if (call.name === 'agent') {
+      const agentName = String(a.agentName || a.agent || a.name || '');
+      const task = String(a.task || a.prompt || a.input || '');
+      return agentName ? (task ? `${agentName} ${task}` : agentName) : argsStr;
+    }
+
+    // Multi-arg tools with specific formats.
     if (call.name === 'exec' || call.name === 'bash') {
-      return String((args as any).command || (args as any).cmd || argsStr);
+      return String(a.command || a.cmd || a.shell || argsStr);
     }
     if (call.name === 'write' || call.name === 'file_write') {
-      const path = String((args as any).path || '');
-      const content = String((args as any).content || '');
+      const path = String(a.path || a.file || a.filename || '');
+      const content = String(a.content || a.text || a.data || '');
       return `${path}\n${content}`;
     }
     if (call.name === 'read' || call.name === 'file_read') {
-      return String((args as any).path || argsStr);
+      const path = String(a.path || a.file || '');
+      const offset = a.offset !== undefined ? ` ${a.offset}` : '';
+      const limit = a.limit !== undefined ? ` ${a.limit}` : '';
+      return `${path}${offset}${limit}`;
     }
     if (call.name === 'edit' || call.name === 'file_edit') {
-      const path = String((args as any).path || '');
-      const oldStr = String((args as any).old_string || (args as any).old || (args as any).find || '');
-      const newStr = String((args as any).new_string || (args as any).new || (args as any).replace || '');
+      const path = String(a.path || a.file || '');
+      const oldStr = String(a.old_string || a.old || a.find || a.search || '');
+      const newStr = String(a.new_string || a.new || a.replace || '');
       return `${path}\n${oldStr}\n${newStr}`;
     }
     if (call.name === 'web_fetch') {
-      const url = String((args as any).url || '');
-      const prompt = String((args as any).prompt || '');
+      const url = String(a.url || a.uri || a.link || '');
+      const prompt = String(a.prompt || a.question || '');
       return prompt ? `${url} ${prompt}` : url;
     }
-    // For tools that take a single primary arg, extract it.
-    const primaryFields = ['query', 'path', 'command', 'content', 'url', 'name', 'prompt', 'text', 'pattern', 'input'];
+    if (call.name === 'web_search') {
+      return String(a.query || a.q || a.search || argsStr);
+    }
+    if (call.name === 'memory') {
+      const action = String(a.action || a.command || 'save');
+      const key = String(a.key || '');
+      const value = String(a.value || a.content || '');
+      return `${action} ${key} ${value}`;
+    }
+
+    // Generic: extract the primary field.
+    const primaryFields = ['query', 'path', 'command', 'content', 'url', 'name', 'prompt', 'text', 'pattern', 'input', 'action'];
     for (const field of primaryFields) {
-      if ((args as any)[field] !== undefined) {
-        return String((args as any)[field]);
+      if (a[field] !== undefined) {
+        return String(a[field]);
       }
     }
     return argsStr;
