@@ -208,24 +208,39 @@ function resolveProvider(route: ModelRoute, options: EngineOptions): ResolvedPro
 function* getFailoverProviders(route: ModelRoute, exclude?: string): Generator<ResolvedProvider> {
   const registry = getRegistry();
   const all = registry.getAll();
-
   const primary = registry.resolve(`${route.provider}/${route.model}`);
-  if (primary && primary.provider.name !== exclude && !isProviderFailed(`${primary.provider.name}:${route.model}`)) {
-    yield { ...primary, route };
+
+  // First: try other models on the SAME provider (different rate limit pool).
+  if (primary && primary.provider.name !== exclude) {
+    for (const m of primary.provider.models) {
+      if (m === route.model) continue;
+      const key = `${primary.provider.name}:${m}`;
+      if (isProviderFailed(key)) continue;
+      yield { provider: primary.provider, model: m, route: { ...route, model: m } };
+    }
   }
 
-  for (const p of all) {
-    if (p.name === exclude || p.name === route.provider) continue;
-    if (isProviderFailed(`${p.name}:${route.model}`)) continue;
-    yield { provider: p, model: route.model, route: { ...route, provider: p.name } };
-  }
-
+  // Second: try the same model on OTHER providers.
   for (const p of all) {
     if (p.name === exclude) continue;
-    const key = `${p.name}:${p.models[0]}`;
-    if (isProviderFailed(key)) continue;
-    const model = p.models[0] || 'gpt-oss-20b';
-    yield { provider: p, model, route: { ...route, provider: p.name, model } };
+    if (p.name === route.provider) continue;
+    // Check if this provider has the same model or a similar one.
+    if (p.models.includes(route.model)) {
+      const key = `${p.name}:${route.model}`;
+      if (!isProviderFailed(key)) {
+        yield { provider: p, model: route.model, route: { ...route, provider: p.name } };
+      }
+    }
+  }
+
+  // Third: try any model on any provider (broadest fallback).
+  for (const p of all) {
+    if (p.name === exclude) continue;
+    for (const m of p.models) {
+      const key = `${p.name}:${m}`;
+      if (isProviderFailed(key)) continue;
+      yield { provider: p, model: m, route: { ...route, provider: p.name, model: m } };
+    }
   }
 }
 
@@ -236,7 +251,7 @@ async function* streamWithRetry(
   messages: Message[],
   model: string,
   options: StreamOptions,
-  maxRetries = 2,
+  maxRetries = 1,  // was 2 — reduce retries so failover kicks in faster
 ): AsyncGenerator<AssistantMessageEvent> {
   let lastErr: Error | null = null;
 

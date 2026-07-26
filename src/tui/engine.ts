@@ -36,7 +36,7 @@ export class TUIEngine {
   private animTimer: ReturnType<typeof setInterval> | null = null;
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRenderTime: number = 0;
-  private minRenderInterval: number = 16; // ~60fps cap
+  private minRenderInterval: number = 33; // ~30fps cap (was 16/60fps — too fast, causes blinking)
   private dirty: boolean = true;
   private animating: boolean = false;
   private sigintHandler: (() => void) | null = null;
@@ -122,7 +122,7 @@ export class TUIEngine {
     return this.scrollOffset > 0;
   }
 
-  startAnimation(intervalMs: number = 80): void {
+  startAnimation(intervalMs: number = 120): void {  // was 80ms — too fast, causes blinking
     if (this.animTimer) return;
     this.animating = true;
     this.animTimer = setInterval(() => {
@@ -393,21 +393,24 @@ export class TUIEngine {
 
   private renderFull(lines: readonly string[]): void {
     this.allLines = lines;
+    // Don't use ERASE_DISPLAY (ESC[2J) — it causes screen flicker.
+    // Instead, position cursor at home and overwrite each line, then
+    // clear any leftover lines at the bottom.
     this.stdout.write(CURSOR_HOME);
-    this.stdout.write(ERASE_DISPLAY);
-    // Auto-scroll: show the LAST N lines that fit on screen, not the first N.
-    // If the user has scrolled up, show from the scrolled position.
     const visibleCount = Math.min(lines.length, this.height - 1);
     let startIdx: number;
     if (this.scrollOffset > 0) {
-      // User scrolled up — show from (bottom - scrollOffset).
       startIdx = Math.max(0, lines.length - visibleCount - this.scrollOffset);
     } else {
-      // Normal — show the tail (newest output).
       startIdx = Math.max(0, lines.length - visibleCount);
     }
     for (let i = 0; i < visibleCount; i++) {
+      this.stdout.write('\x1b[2K');  // clear this line
       this.stdout.write(lines[startIdx + i] + '\r\n');
+    }
+    // Clear any remaining lines below the content.
+    for (let i = visibleCount; i < this.height - 1; i++) {
+      this.stdout.write(`\x1b[${i + 1};1H\x1b[2K`);
     }
     // Show scroll indicator if scrolled up.
     if (this.scrollOffset > 0) {
