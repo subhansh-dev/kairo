@@ -519,7 +519,7 @@ export async function* agentLoop(
   }
 
   let { provider, model } = resolved;
-  const maxTurns = options.maxTurns || 10;
+  const maxTurns = options.maxTurns || 25;
   let fullContent = '';
   let allToolCalls: Array<{ name: string; args: string }> = [];
   let hadToolFailure = false;
@@ -853,10 +853,13 @@ export async function* agentLoop(
     }
 
     if (turnToolCalls.length === 0) {
-      // Text-only turn with no tools — push to history and continue
+      // Text-only turn with no tools — this is the model's final answer.
+      // Push to history and STOP (don't continue to next turn).
       endTurn('completed');
       messages.push({ role: 'assistant', content: turnText });
-      continue;
+      // Yield the final answer as a done event so the TUI knows we're finished.
+      yield { type: 'done', content: turnText, route };
+      break;
     }
 
     // Push the assistant message WITH tool_calls so the API knows what

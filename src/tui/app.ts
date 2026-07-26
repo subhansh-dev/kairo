@@ -290,14 +290,15 @@ export async function tui() {
         abortController = new AbortController();
         const signal = abortController.signal;
 
-        // Auto-timeout: 120s per message to prevent hangs
+        // Auto-timeout: 300s per message to prevent hangs (increased from 120s
+        // — complex tasks with multiple tool calls need more time).
         const msgTimeout = setTimeout(() => {
           if (abortController) {
             abortController.abort();
-            chatComp.setMessages([...chatComp.getMessages(), { role: 'assistant', content: `${c.error}⏱ Timed out after 120s${R}` }]);
+            chatComp.setMessages([...chatComp.getMessages(), { role: 'assistant', content: `${c.error}⏱ Timed out after 300s${R}` }]);
             engine.requestRender();
           }
-        }, 120_000);
+        }, 300_000);
 
         if (isSlashCmd) {
           const cmd = input.split(' ')[0];
