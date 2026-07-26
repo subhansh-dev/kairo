@@ -124,10 +124,12 @@ export const openaiDialect: DialectDefinition = {
       }));
     }
     if (options.toolChoice) body.tool_choice = options.toolChoice;
+    // Only send thinking/reasoning for providers that support it.
+    // NVIDIA NIM supports 'thinking' in the body for Nemotron models.
+    // Groq/Cerebras do NOT — sending it causes 400 errors.
     if (options.reasoning && options.reasoning !== 'off') {
-      // NVIDIA NIM uses a 'thinking' field directly in the request body.
-      // The 'extra_body' concept is from the OpenAI Python client which
-      // merges it into the body — when using raw HTTP we put it directly.
+      // Check if this provider supports thinking (NVIDIA only for now).
+      // The caller (engine) should only set reasoning for NVIDIA.
       body.thinking = { type: 'enabled', budget: reasoningBudget(options.reasoning) };
     }
 

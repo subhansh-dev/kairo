@@ -383,7 +383,7 @@ export async function runAgent(
     const structuredToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
 
     for await (const event of provider.stream(messages, model, {
-      reasoning: route.thinking ? 'high' : undefined,
+      reasoning: (provider.name === 'nvidia' && route.thinking) ? 'high' : undefined,
       signal: options.signal,
       tools: apiTools,
       toolChoice: apiTools ? 'auto' as const : undefined,

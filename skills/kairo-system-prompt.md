@@ -245,6 +245,14 @@ Tools are available via the native function-calling API. When you want to use a 
 
 **Do NOT write tool calls as text, JSON, XML, or `!tool_name` syntax in your response.** The system intercepts function calls automatically.
 
+**Fallback:** If your model does not support native function calling, emit each tool call as:
+```
+<tool_call>
+{"name": "tool_name", "arguments": {"arg1": "value1"}}
+</tool_call>
+```
+Use this format ONLY if native function calling is not available. Never emit bare JSON objects without the XML wrapper.
+
 ## Tool Calling Rules
 
 1. Use specialized tools over shell commands. Use `read` instead of `cat`, `edit` instead of `sed`, `write` instead of `cat` with heredoc.

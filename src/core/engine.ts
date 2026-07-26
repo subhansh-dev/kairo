@@ -603,7 +603,9 @@ export async function* agentLoop(
 
     const streamOptions: StreamOptions = {
       signal: options.signal,
-      reasoning: thinkingEffort ?? (route.thinking ? 'high' as Effort : undefined),
+      // Only send thinking/reasoning for NVIDIA (Nemotron supports it).
+      // Groq/Cerebras reject the 'thinking' field with 400 errors.
+      reasoning: (provider.name === 'nvidia' && (thinkingEffort ?? (route.thinking ? 'high' as Effort : undefined))) || undefined,
       tools: apiTools,
       toolChoice: 'auto' as const,
     };
