@@ -1151,27 +1151,40 @@ export async function* agentLoop(
       }
     }
 
-    // Send tool results as proper tool role messages
-    // Use the structured toolResultMap instead of regex parsing on concatenated strings
-    const toolCallIdMap = new Map<string, string>();
-    for (const tc of pendingToolCalls) {
-      toolCallIdMap.set(tc.name, tc.id || `call_${tc.name}_${Date.now()}`);
-    }
-    // Generate unique IDs for text-based tool calls too
-    for (const tc of turnToolCalls) {
-      if (!toolCallIdMap.has(tc.name)) {
-        toolCallIdMap.set(tc.name, `call_${tc.name}_${Date.now()}`);
+    // Send tool results back to the model.
+    // If we got STRUCTURED tool calls from the API (pendingToolCalls), use
+    // role='tool' with tool_call_id — this is the proper OpenAI format.
+    // If we only got TEXT-BASED tool calls (extractToolCalls), use role='user'
+    // with a "Tool results:" prefix — the API rejects role='tool' messages
+    // that don't have a matching tool_calls in the preceding assistant message.
+    if (pendingToolCalls.length > 0) {
+      // Structured: push individual tool messages with tool_call_id.
+      const toolCallIdMap = new Map<string, string>();
+      for (const tc of pendingToolCalls) {
+        toolCallIdMap.set(tc.name, tc.id || `call_${tc.name}_${Date.now()}`);
       }
-    }
-    for (const tc of turnToolCalls) {
-      const toolCallId = toolCallIdMap.get(tc.name) || `call_${tc.name}_${Date.now()}`;
-      // Look up the result directly from the Map — no regex needed
-      const resultText = toolResultMap.get(tc.name) || 'No output';
+      for (const tc of turnToolCalls) {
+        const toolCallId = toolCallIdMap.get(tc.name) || `call_${tc.name}_${Date.now()}`;
+        const resultText = toolResultMap.get(tc.name) || 'No output';
+        messages.push({
+          role: 'tool' as const,
+          content: resultText,
+          tool_call_id: toolCallId,
+        } as any);
+      }
+    } else {
+      // Text-based: push as user message (legacy format).
+      // This avoids the API rejecting role='tool' messages without
+      // matching tool_calls in the assistant message.
+      let toolOutput = '';
+      for (const tc of turnToolCalls) {
+        const resultText = toolResultMap.get(tc.name) || 'No output';
+        toolOutput += `\n\nTool ${tc.name}:\n${resultText}`;
+      }
       messages.push({
-        role: 'tool' as const,
-        content: resultText,
-        tool_call_id: toolCallId,
-      } as any);
+        role: 'user' as const,
+        content: `Tool results:${toolOutput}`,
+      });
     }
 
     // End turn lifecycle
