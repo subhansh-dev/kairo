@@ -125,7 +125,10 @@ export const openaiDialect: DialectDefinition = {
     }
     if (options.toolChoice) body.tool_choice = options.toolChoice;
     if (options.reasoning && options.reasoning !== 'off') {
-      body.extra_body = { thinking: { type: 'enabled', budget: reasoningBudget(options.reasoning) } };
+      // NVIDIA NIM uses a 'thinking' field directly in the request body.
+      // The 'extra_body' concept is from the OpenAI Python client which
+      // merges it into the body — when using raw HTTP we put it directly.
+      body.thinking = { type: 'enabled', budget: reasoningBudget(options.reasoning) };
     }
 
     return body;
