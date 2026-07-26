@@ -109,11 +109,6 @@ export function resetEngine(): void {
 // ─── System Prompt ──────────────────────────────────────────────
 
 function buildSystemPrompt(skills: SkillLoader, projectDir?: string): string {
-  const toolList = toolRegistry.getAll().map(t => {
-    const safety = t.readOnly ? ' [read-only]' : t.destructive ? ' [destructive]' : '';
-    return `  ${t.name} — ${t.description}${safety}`;
-  }).join('\n');
-
   // Load master system prompt from skills (always-apply)
   let base = '';
 
@@ -131,7 +126,9 @@ function buildSystemPrompt(skills: SkillLoader, projectDir?: string): string {
     base += `You are Kairo, a coding agent. Use tools to solve problems. Don't describe what you would do — do it.`;
   }
 
-  base += `\n\n## Available Tools\n\n${toolList}`;
+  // NOTE: Tool schemas are now sent via the native function-calling API
+  // (streamOptions.tools). We do NOT add a text tool list to the system
+  // prompt — that would confuse the model with conflicting formats.
 
   const skillSection = skills.renderForPrompt();
   const context = buildFullContext(projectDir);
